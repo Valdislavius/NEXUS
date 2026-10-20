@@ -29,16 +29,17 @@ $taskConfig = Get-Content (Join-Path $taskRoot 'src-tauri/tauri.conf.json') -Raw
 $taskVersion = $taskConfig.version
 if ($taskConfig.bundle.windows.nsis.installMode -ne 'currentUser') { throw 'Installer is not currentUser' }
 if ($taskConfig.bundle.windows.webviewInstallMode.type -ne 'offlineInstaller') { throw 'Offline WebView2 missing' }
-$appPath = Join-Path $taskRoot 'release/portable/NEXUS.exe'
-$installerPath = Join-Path $taskRoot 'release/installer/NEXUS-Setup.exe'
+$releaseRoot = Join-Path $taskRoot "release/$taskVersion"
+$appPath = Join-Path $releaseRoot 'portable/NEXUS.exe'
+$installerPath = Join-Path $releaseRoot 'installer/NEXUS-Setup.exe'
 $appManifest = Get-EmbeddedManifest $appPath
 $installerManifest = Get-EmbeddedManifest $installerPath
-if ($appManifest -notmatch 'requestedExecutionLevel[^>]+level="requireAdministrator"' -or $appManifest -notmatch 'uiAccess="false"') { throw 'Release application UAC manifest is incorrect' }
+if ($appManifest -notmatch 'requestedExecutionLevel[^>]+level="asInvoker"' -or $appManifest -notmatch 'uiAccess="false"') { throw 'Release application must run as the current user' }
 if ($appManifest -notmatch 'Microsoft.Windows.Common-Controls') { throw 'Common Controls manifest dependency missing' }
 if ($installerManifest -notmatch 'requestedExecutionLevel[^>]+level="asInvoker"') { throw 'Installer requests elevation unexpectedly' }
 if ((Get-Item $appPath).VersionInfo.ProductVersion -ne $taskVersion) { throw 'Application version mismatch' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $taskRoot "release/NEXUS-Desktop-${taskVersion}-portable-windows-x64.zip"))
+$zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $releaseRoot "NEXUS-Desktop-${taskVersion}-portable-windows-x64.zip"))
 try {
     if (-not ($zip.Entries | Where-Object FullName -eq 'NEXUS.exe')) { throw 'Portable application missing' }
     if (-not ($zip.Entries | Where-Object FullName -eq 'nexus-collector.exe')) { throw 'Portable collector missing' }
@@ -52,10 +53,10 @@ $webviewMatch = [regex]::Match($nsis, '!define WEBVIEW2INSTALLERPATH "([^"]+)"')
 if (-not $webviewMatch.Success -or -not (Test-Path -LiteralPath $webviewMatch.Groups[1].Value)) { throw 'Embedded offline WebView2 payload not found' }
 $signature = Get-AuthenticodeSignature -LiteralPath $webviewMatch.Groups[1].Value
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'WebView2 installer signature invalid' }
-$taskArtifacts = Join-Path $taskRoot 'artifacts/alpha031'
+$taskArtifacts = Join-Path $taskRoot "artifacts/$taskVersion"
 New-Item -ItemType Directory -Path $taskArtifacts -Force | Out-Null
 $appManifest | Set-Content (Join-Path $taskArtifacts 'application.manifest.xml')
 $installerManifest | Set-Content (Join-Path $taskArtifacts 'installer.manifest.xml')
-$result = [ordered]@{ version=$taskVersion; applicationExecutionLevel='requireAdministrator'; installerExecutionLevel='asInvoker'; installMode='currentUser'; offlineWebView2Embedded=$true; webView2Signature='Valid Microsoft Corporation'; collectorBundled=$true; portablePairPresent=$true }
+$result = [ordered]@{ version=$taskVersion; applicationExecutionLevel='asInvoker'; installerExecutionLevel='asInvoker'; installMode='currentUser'; offlineWebView2Embedded=$true; webView2Signature='Valid Microsoft Corporation'; collectorBundled=$true; portablePairPresent=$true }
 $result | ConvertTo-Json | Set-Content (Join-Path $taskArtifacts 'release-verification.json')
 $result | ConvertTo-Json

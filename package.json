@@ -1,5 +1,5 @@
 {
-  "name": "nexus-desktop", "version": "0.3.1", "private": true, "type": "module",
+  "name": "nexus-desktop", "version": "1.0.0-beta.1", "private": true, "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1", "build": "tsc -b && vite build",
     "typecheck": "tsc -b", "test": "vitest run", "tauri": "tauri",
