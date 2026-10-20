@@ -9,3 +9,19 @@ artifacts/
 collector/nexus-collector.exe
 
 *.tsbuildinfo
+
+# Machine-local history, settings, exports and credentials
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.dmp
+*.pfx
+*.key
+exports/
+reports/
+website/qa/
