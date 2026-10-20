@@ -9,7 +9,7 @@ const sensorReportSchema = z.object({
 // Reconstruct the allowlisted report before writing. Snapshots, names, specs,
 // addresses and arbitrary backend error strings never enter this download.
 export const diagnosticReportSchema = z.object({
-  version: z.literal(1), type: z.literal('diagnostics'), appVersion: z.literal('0.3.1'), at: z.string(),
+  version: z.literal(1), type: z.literal('diagnostics'), appVersion: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/), at: z.string(),
   privacy: z.object({ serialNumbers: z.literal(false), userIdentifiers: z.literal(false), ipAddresses: z.literal(false) }),
   collector: z.object({ running: z.boolean(), snapshotReady: z.boolean() }),
   sensors: z.array(sensorReportSchema),
@@ -28,3 +28,5 @@ export async function downloadDiagnostics(): Promise<void> {
   try { anchor.click(); }
   finally { anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
 }
+
+

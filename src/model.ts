@@ -8,6 +8,7 @@ export const metricSchema = z.object({
   id: z.string(), label: z.string(), value: z.number().finite().nonnegative().nullable(),
   unit: z.string(), source: z.string(), reason: z.string().optional(), at: z.string(), primary: z.boolean(),
   description: z.string().optional(), diagnostic: diagnosticSchema.optional(),
+  status: z.enum(['available', 'unavailable', 'stale']).optional(), maxAgeMs: z.number().int().positive().optional(),
 });
 export const smartAttributeSchema = z.object({
   id: z.number().int().min(1).max(255), name: z.string(), flags: z.number().int().min(0).max(65535),
@@ -63,4 +64,20 @@ export function reconcileSnapshot(previous: Snapshot | null, incoming: Snapshot)
         metrics: c.metrics.filter(m => m.value !== null || known.has(m.id) || m.diagnostic || (c.kind === 'cpu' && m.id === 'temperature')) };
     }),
   };
+}
+
+// A fresh transport frame never makes an expired cached hardware reading current.
+export function invalidateExpiredMetrics(snapshot: Snapshot, now = Date.now()): Snapshot {
+  let changed = false;
+  const components = snapshot.components.map(c => {
+    let componentChanged = false;
+    const metrics = c.metrics.map(m => {
+      const expired = m.status === 'stale' || m.status === 'unavailable' || (m.maxAgeMs != null && Number.isFinite(Date.parse(m.at)) && now - Date.parse(m.at) > m.maxAgeMs);
+      if (!expired || m.value === null) return m;
+      changed = componentChanged = true;
+      return { ...m, value: null, status: 'stale' as const, reason: 'Срок актуальности показания истёк', diagnostic: { status: 'transient_error' as const, code: 'SENSOR_READING_EXPIRED' } };
+    });
+    return componentChanged ? { ...c, metrics } : c;
+  });
+  return changed ? { ...snapshot, components } : snapshot;
 }

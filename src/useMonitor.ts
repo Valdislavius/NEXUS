@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { reconcileSnapshot, snapshotSchema } from './model';
+import { invalidateExpiredMetrics, reconcileSnapshot, snapshotSchema } from './model';
 import type { Snapshot } from './model';
 export function useMonitor() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -17,7 +17,7 @@ export function useMonitor() {
       if (!mounted.current) return;
       const parsed = snapshotSchema.safeParse(raw);
       if (!parsed.success) { setError('Не удалось прочитать показания. Попробуйте обновить оборудование.'); return; }
-      setSnapshot(old => old && Date.parse(old.at) > Date.parse(parsed.data.at) ? old : reconcileSnapshot(old, parsed.data));
+      setSnapshot(old => old && Date.parse(old.at) > Date.parse(parsed.data.at) ? old : reconcileSnapshot(old, invalidateExpiredMetrics(parsed.data)));
       setError('');
       if (parsed.data.ready) setRestarting(false);
     };
@@ -37,7 +37,7 @@ export function useMonitor() {
       } catch (e) { if (mounted.current) setError(String(e)); }
     }
     void connect();
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), 5000);
     return () => { mounted.current = false; cleanup.forEach(f => f()); window.clearInterval(timer); };
   }, []);
   const changeInterval = useCallback(async (value: number) => {
@@ -53,3 +53,4 @@ export function useMonitor() {
   return { snapshot, error, interval, changeInterval, restart, restarting,
     stale: !!snapshot?.ready && now - Date.parse(snapshot.at) > Math.max(15000, interval * 3) };
 }
+
