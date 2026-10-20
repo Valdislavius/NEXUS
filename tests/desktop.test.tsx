@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { boundedPoints, stats, HistoryChart } from '../src/HistoryChart';
+import { boundedPoints, chartSegments, chartPath, stats, HistoryChart } from '../src/HistoryChart';
 import { Reports, Benchmarks } from '../src/Tools';
 import { AppView } from '../src/App';
 import { invalidateExpiredMetrics } from '../src/model';
@@ -43,4 +43,20 @@ test('collapsed overview cards do not mount detailed sensor grids', async () => 
  const { Card } = await import('../src/Card');
  const view = render(<Card component={{ ...component, metrics: [...component.metrics, { ...component.metrics[0], id: 'thread-0', label: 'Поток 00', primary: false }] }} />);
  expect(view.queryByText('Загрузка потоков')).toBeNull(); fireEvent.click(view.getByRole('button', { expanded: false })); expect(view.getByRole('heading', { name: /Загрузка потоков/ })).toBeVisible();
+});
+
+
+const historyPoint = (atMs: number, value: number | null = 1) => ({ atMs, value, min: value, max: value, count: value === null ? 0 : 1 });
+test('history paths break across an unrecorded collector outage and explicit missing readings', () => {
+ const segments = chartSegments([historyPoint(0), historyPoint(2000), historyPoint(40000), historyPoint(42000), historyPoint(44000, null), historyPoint(46000)], 300000);
+ expect(segments.map(segment => segment.map(point => point.atMs))).toEqual([[0, 2000], [40000, 42000], [46000]]);
+ expect(chartPath(segments, value => value / 1000, value => value)).toBe('M0.00 1.00 L2.00 1.00 M40.00 1.00 L42.00 1.00 M46.00 1.00');
+});
+test('regular sensor cadence and coarser query buckets remain connected without bridging missing buckets', () => {
+ expect(chartSegments([historyPoint(0), historyPoint(30000), historyPoint(60000)], 300000, 60000)).toHaveLength(1);
+ const bucket = Math.floor(21600000 / 300) + 1;
+ const segments = chartSegments([historyPoint(0), historyPoint(bucket), historyPoint(2 * bucket), historyPoint(5 * bucket)], 21600000);
+ expect(segments.map(segment => segment.length)).toEqual([3, 1]);
+ // A sparse two-point result must not reinterpret its outage as a large bucket.
+ expect(chartSegments([historyPoint(0), historyPoint(40000)], 300000)).toHaveLength(2);
 });

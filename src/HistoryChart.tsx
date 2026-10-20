@@ -12,6 +12,28 @@ export function boundedPoints<T>(points: T[], max = 300): T[] {
   if (max < 2) return points.slice(-Math.max(0, max));
   return Array.from({ length: max }, (_, i) => points[Math.round(i * (points.length - 1) / (max - 1))]);
 }
+// Match the history query's actual bucket width. Never derive tolerance from
+// returned row count: an outage would otherwise increase interpolation reach.
+export function chartSegments(points: HistoryPoint[], durationMs: number, maxAgeMs = 15000, maxPoints = 300): HistoryPoint[][] {
+  const bucketMs = Math.floor(Math.max(0, durationMs) / Math.max(1, maxPoints)) + 1;
+  const maxGapMs = Math.max(Number.isFinite(maxAgeMs) && maxAgeMs > 0 ? maxAgeMs : 15000, 2 * bucketMs);
+  const segments: HistoryPoint[][] = [];
+  let segment: HistoryPoint[] | null = null;
+  let previousAt: number | null = null;
+  for (const point of points) {
+    if (point.value === null || !Number.isFinite(point.value) || !Number.isFinite(point.atMs)) {
+      segment = null; previousAt = null; continue;
+    }
+    if (!segment || previousAt === null || point.atMs <= previousAt || point.atMs - previousAt > maxGapMs) {
+      segment = []; segments.push(segment);
+    }
+    segment.push(point); previousAt = point.atMs;
+  }
+  return segments;
+}
+export function chartPath(segments: HistoryPoint[][], x: (value: number) => number, y: (value: number) => number): string {
+  return segments.map(segment => segment.map((point, index) => `${index ? 'L' : 'M'}${x(point.atMs).toFixed(2)} ${y(point.value!).toFixed(2)}`).join(' ')).join(' ');
+}
 export function stats(points: HistoryPoint[]) {
   const values = points.filter(p => p.value !== null);
   const count = values.reduce((sum, p) => sum + Math.max(1, p.count), 0);
@@ -87,8 +109,8 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
       const x = (v: number) => 45 + (v - from) / duration * 835, y = (v: number) => 168 - v / ymax * 140;
       return <div className="chart-unit" key={unit}><span className="axis-unit">{unit || 'Значение'}</span><svg ref={canvas} viewBox="0 0 920 200" role="img" aria-label={`История, ${unit || 'значения'}`} onPointerLeave={() => setHover(null)} onPointerMove={e => { const rect = e.currentTarget.getBoundingClientRect(); setHover(from + Math.min(1, Math.max(0, ((e.clientX - rect.left) / rect.width * 920 - 45) / 835)) * duration); }}>
         {[0, .5, 1].map(f => <g key={f}><line x1="45" y1={y(ymax * f)} x2="880" y2={y(ymax * f)} className="grid-line" /><text x="35" y={y(ymax * f) + 4} textAnchor="end">{formatMetric({ value: ymax * f, unit: unit === '%' ? '' : unit })}</text></g>)}
-        {group.map(s => { let d = ''; let gap = true; for (const p of s.points) { if (p.value === null) { gap = true; continue; } d += `${gap ? 'M' : 'L'}${x(p.atMs).toFixed(2)} ${y(p.value).toFixed(2)} `; gap = false; } return <g key={seriesKey(s)}><path d={d} stroke={palette[series.indexOf(s) % 4]} className="chart-line" />{s.points.filter(p => p.value !== null).length === 1 && s.points.filter(p => p.value !== null).map(p => <circle key={p.atMs} cx={x(p.atMs)} cy={y(p.value!)} r="3" fill={palette[series.indexOf(s) % 4]} />)}</g>; })}
-        {previous.filter(s => s.unit === unit).map(s => <path key={seriesKey(s)} d={s.points.reduce((state, p) => p.value === null ? { d: state.d, gap: true } : { d: `${state.d}${state.gap ? 'M' : 'L'}${x(p.atMs)} ${y(p.value)} `, gap: false }, { d: '', gap: true }).d} fill="none" stroke="#a5b7ac" strokeWidth="1.5" strokeDasharray="4 4" opacity=".55" />)}
+        {group.map(s => { const segments = chartSegments(s.points, duration, metrics.find(m => m.id === s.metricId && m.unit === s.unit && m.source === s.source)?.maxAgeMs); return <g key={seriesKey(s)}><path d={chartPath(segments, x, y)} stroke={palette[series.indexOf(s) % 4]} className="chart-line" />{segments.filter(segment => segment.length === 1).map(([point], index) => <circle key={`${point.atMs}:${index}`} cx={x(point.atMs)} cy={y(point.value!)} r="3" fill={palette[series.indexOf(s) % 4]} />)}</g>; })}
+        {previous.filter(s => s.unit === unit).map(s => <path key={seriesKey(s)} d={chartPath(chartSegments(s.points, duration, metrics.find(m => m.id === s.metricId && m.unit === s.unit && m.source === s.source)?.maxAgeMs), x, y)} fill="none" stroke="#a5b7ac" strokeWidth="1.5" strokeDasharray="4 4" opacity=".55" />)}
         {eventList.map(e => <line key={e.id} x1={x(e.atMs)} x2={x(e.atMs)} y1="23" y2="168" className={`event-line ${e.severity}`}><title>{e.title}</title></line>)}
         {hover !== null && <line x1={x(hover)} x2={x(hover)} y1="23" y2="168" className="hover-line" />}
         {[0, .5, 1].map(f => <text key={f} x={x(from + duration * f)} y="192" textAnchor={f === 0 ? 'start' : f === 1 ? 'end' : 'middle'}>{new Date(from + duration * f).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</text>)}
