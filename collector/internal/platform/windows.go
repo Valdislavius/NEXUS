@@ -5,6 +5,8 @@ package platform
 import (
 	"context"
 	"fmt"
+	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +14,6 @@ import (
 	"github.com/shirou/gopsutil/v4/cpu"
 
 	"github.com/shirou/gopsutil/v4/host"
-	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/yusufpapurcu/wmi"
 	"golang.org/x/sys/windows"
 	"nexus/collector/internal/model"
@@ -31,12 +32,20 @@ type windowsAdapter struct {
 	lastHealth     time.Time
 	warnings       []string
 	primed         bool
+	profile        CollectionProfile
+	lastSample     time.Time
+	lastNetwork    time.Time
+	interfaces     []net.Interface
+	interfaceSpecs []model.Spec
 }
 
 func New() (Adapter, error) {
-	return &windowsAdapter{nv: openNVML(), volumes: map[string][]string{}, previous: map[string]windows.MibIfRow2{}}, nil
+	profile, _ := Profile("balanced")
+	return &windowsAdapter{nv: openNVML(), profile: profile, volumes: map[string][]string{}, previous: map[string]windows.MibIfRow2{}}, nil
 }
-func (a *windowsAdapter) Close() { a.nv.close(); a.thermometer.close() }
+func (a *windowsAdapter) SetProfile(profile CollectionProfile) { a.profile = profile }
+func (a *windowsAdapter) SetInterval(interval time.Duration)   { a.profile.Fast = interval }
+func (a *windowsAdapter) Close()                               { a.nv.close(); a.thermometer.close() }
 func number(v uint64) string {
 	if v == 0 {
 		return ""
@@ -74,6 +83,10 @@ type physicalDisk struct {
 	Model, InterfaceType, MediaType, DeviceID string
 	Size                                      uint64
 }
+type diskFirmware struct {
+	Index            uint32
+	FirmwareRevision string
+}
 type partition struct {
 	DeviceID string
 	Index    uint32
@@ -94,11 +107,14 @@ func (a *windowsAdapter) Inventory(ctx context.Context) ([]model.Component, []st
 	// Rediscovery must release a previous CPU driver handle before selecting the
 	// current vendor and package again.
 	a.thermometer.close()
+	a.warnings = nil
+	a.volumes = map[string][]string{}
 	result := []model.Component{}
 	cpus, err := query[processor]("SELECT Name,Manufacturer,SocketDesignation,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L2CacheSize,L3CacheSize FROM Win32_Processor")
 	a.warn("CPU", err)
 	a.singleCPU = err == nil && len(cpus) == 1
 	c := model.New("cpu", "cpu", "Процессор", "Вычислительные ресурсы")
+	c.Spec("Архитектура приложения", runtime.GOARCH)
 	if len(cpus) > 0 {
 		names := []string{}
 		cores, threads := uint32(0), uint32(0)
@@ -122,13 +138,22 @@ func (a *windowsAdapter) Inventory(ctx context.Context) ([]model.Component, []st
 		if !strings.EqualFold(strings.TrimSpace(r.SocketDesignation), "U3E1") {
 			c.Spec("Сокет", r.SocketDesignation)
 		}
-		c.Spec("Макс. частота по WMI", number(uint64(r.MaxClockSpeed))+" МГц")
-		c.Spec("Кэш L2 (WMI)", number(uint64(r.L2CacheSize))+" КиБ")
-		c.Spec("Кэш L3 (WMI)", number(uint64(r.L3CacheSize))+" КиБ")
+		if r.MaxClockSpeed > 0 {
+			c.Spec("Макс. частота по WMI", number(uint64(r.MaxClockSpeed))+" МГц")
+		}
+		if r.L2CacheSize > 0 {
+			c.Spec("Кэш L2 (WMI)", number(uint64(r.L2CacheSize))+" КиБ")
+		}
+		if r.L3CacheSize > 0 {
+			c.Spec("Кэш L3 (WMI)", number(uint64(r.L3CacheSize))+" КиБ")
+		}
 	}
 	missing(&c, "load", "Загрузка", "%", "Ожидание второго измерения", true)
 	missing(&c, "clock", "Частота Windows", "МГц", "Не получена", true)
 	missing(&c, "temperature", "Температура", "°C", "Ожидание CPU Package", true)
+	for _, m := range []struct{ id, label, unit string }{{"power", "Мощность CPU", "Вт"}, {"voltage", "Напряжение CPU", "В"}, {"powerLimit", "Лимит мощности", "Вт"}, {"throttling", "Подтверждённый троттлинг", ""}} {
+		missing(&c, m.id, m.label, m.unit, "Безопасный источник этого показателя не предоставлен", false)
+	}
 	c.Spec("Датчик температуры", a.thermometer.description())
 	c.Note = "Частота сообщается системой управления питанием Windows и может отличаться от эффективной частоты под нагрузкой. Для температуры Intel CPU Package нужен установленный PawnIO. Температура AMD пока не поддерживается в безопасном режиме чтения. Драйвер автоматически не устанавливается."
 	result = append(result, c)
@@ -198,10 +223,16 @@ func (a *windowsAdapter) Inventory(ctx context.Context) ([]model.Component, []st
 	result = append(result, ram)
 	drives, err := query[physicalDisk]("SELECT Index,Model,InterfaceType,MediaType,DeviceID,Size FROM Win32_DiskDrive")
 	a.warn("Накопители", err)
+	firmware, _ := query[diskFirmware]("SELECT Index,FirmwareRevision FROM Win32_DiskDrive")
 	for _, r := range drives {
 		id := fmt.Sprintf("disk-%d", r.Index)
 		d := model.New(id, "storage", strings.TrimSpace(r.Model), "Физический диск "+strconv.Itoa(int(r.Index))+" · "+capacity(r.Size))
 		d.Spec("Ёмкость", capacity(r.Size))
+		for _, fw := range firmware {
+			if fw.Index == r.Index {
+				d.Spec("Прошивка", fw.FirmwareRevision)
+			}
+		}
 		bus := deviceBus(r.Index)
 		if bus == "" {
 			bus = r.InterfaceType
@@ -242,6 +273,9 @@ func (a *windowsAdapter) Inventory(ctx context.Context) ([]model.Component, []st
 		result = append(result, d)
 	}
 	board := model.New("board", "motherboard", "Материнская плата", "Платформа и прошивка")
+	missing(&board, "temperature", "Температура платы", "°C", "Провайдер датчиков платы не установлен; ACPI thermal zone не подменяет температуру платы", true)
+	missing(&board, "fan", "Вентилятор", "RPM", "Безопасный провайдер Super I/O не предоставлен", false)
+	missing(&board, "voltage", "Напряжение", "В", "Безопасный провайдер Super I/O не предоставлен", false)
 	boards, err := query[baseboard]("SELECT Manufacturer,Product,Version FROM Win32_BaseBoard")
 	a.warn("Материнская плата", err)
 	for _, r := range boards {
@@ -280,12 +314,21 @@ func (a *windowsAdapter) Inventory(ctx context.Context) ([]model.Component, []st
 
 func (a *windowsAdapter) Sample(ctx context.Context, components []model.Component) ([]model.Component, []string) {
 	warnings := append([]string{}, a.warnings...)
-	loads, loadErr := cpu.PercentWithContext(ctx, 0, true)
-	memory, memErr := mem.VirtualMemoryWithContext(ctx)
-	clocks := powerClocks()
+	if a.profile.Fast <= 0 {
+		a.profile, _ = Profile("balanced")
+	}
 	now := time.Now()
-	refreshHealth := now.Sub(a.lastHealth) >= 30*time.Second
-	refreshVolumes := now.Sub(a.lastVolumes) >= 30*time.Second
+	if !a.lastSample.IsZero() && now.Sub(a.lastSample) > 3*a.profile.Fast {
+		// Resume/recovery begins new rate windows instead of averaging over sleep.
+		a.primed = false
+		a.previous = map[string]windows.MibIfRow2{}
+		a.previousDisks = nil
+	}
+	loads, loadErr := cpu.PercentWithContext(ctx, 0, true)
+	memory, memOK := readPerformance()
+	clocks := powerClocks()
+	refreshHealth := now.Sub(a.lastHealth) >= a.profile.Slow
+	refreshVolumes := now.Sub(a.lastVolumes) >= a.profile.Slow
 	var volumeRows []logicalDisk
 	if refreshVolumes {
 		var e error
@@ -300,6 +343,11 @@ func (a *windowsAdapter) Sample(ctx context.Context, components []model.Componen
 		switch c.Kind {
 		case "cpu":
 			c.Set(sampleCPUTemperature(&a.thermometer, a.singleCPU))
+			for j, metric := range c.Metrics {
+				if strings.HasPrefix(metric.ID, "thread-") {
+					c.Metrics[j] = model.Missing(metric.ID, metric.Label, metric.Unit, metric.Source, "Счётчик логического процессора недоступен", false)
+				}
+			}
 			if loadErr == nil && a.primed && len(loads) > 0 {
 				total := 0.0
 				for j, v := range loads {
@@ -309,11 +357,6 @@ func (a *windowsAdapter) Sample(ctx context.Context, components []model.Componen
 				c.Set(model.Known("load", "Загрузка", "%", "Windows Processor Performance", total/float64(len(loads)), true))
 			} else {
 				missing(c, "load", "Загрузка", "%", "Ожидание измерения или ошибка счётчика", true)
-				for j := range c.Metrics {
-					if strings.HasPrefix(c.Metrics[j].ID, "thread-") {
-						c.Metrics[j] = model.Missing(c.Metrics[j].ID, c.Metrics[j].Label, "%", "Windows", "Счётчик недоступен", false)
-					}
-				}
 			}
 			if len(clocks) > 0 {
 				sum := 0.0
@@ -325,16 +368,7 @@ func (a *windowsAdapter) Sample(ctx context.Context, components []model.Componen
 				missing(c, "clock", "Частота Windows", "МГц", "API управления питанием недоступен", true)
 			}
 		case "ram":
-			if memErr == nil {
-				c.Set(model.Known("used", "Используется", "bytes", "GlobalMemoryStatusEx", float64(memory.Total-memory.Available), true))
-				c.Set(model.Known("load", "Загрузка", "%", "GlobalMemoryStatusEx", 100*float64(memory.Total-memory.Available)/float64(memory.Total), true))
-				c.Set(model.Known("available", "Доступно", "bytes", "GlobalMemoryStatusEx", float64(memory.Available), true))
-				c.Set(model.Known("total", "Доступно Windows всего", "bytes", "GlobalMemoryStatusEx", float64(memory.Total), false))
-			} else {
-				for _, m := range c.Metrics {
-					missing(c, m.ID, m.Label, m.Unit, "Не удалось прочитать физическую память", m.Primary)
-				}
-			}
+			applyMemory(c, memory, memOK)
 		case "gpu":
 			a.nv.sample(c)
 		case "storage":
@@ -383,6 +417,13 @@ func (a *windowsAdapter) Sample(ctx context.Context, components []model.Componen
 				}
 			}
 		case "system":
+			if memOK {
+				c.Set(model.Known("processes", "Процессы Windows", "", "GetPerformanceInfo", float64(memory.Processes), false))
+				c.Set(model.Known("threads", "Потоки Windows", "", "GetPerformanceInfo", float64(memory.Threads), false))
+			} else {
+				missing(c, "processes", "Процессы Windows", "", "Счётчик недоступен", false)
+				missing(c, "threads", "Потоки Windows", "", "Счётчик недоступен", false)
+			}
 			if up, e := host.UptimeWithContext(ctx); e == nil {
 				c.Set(model.Known("uptime", "Время работы", "seconds", "GetTickCount64", float64(up), true))
 			} else {
@@ -398,7 +439,25 @@ func (a *windowsAdapter) Sample(ctx context.Context, components []model.Componen
 	a.primed = loadErr == nil
 	// Native disk I/O counters are sampled without repeated static WMI queries.
 	a.sampleDiskIO(ctx, components, now)
+	a.lastSample = now
+	stampFreshness(components, time.Now(), a.profile)
 	return components, warnings
+}
+
+func stampFreshness(components []model.Component, now time.Time, profile CollectionProfile) {
+	for i := range components {
+		for j := range components[i].Metrics {
+			m := &components[i].Metrics[j]
+			if m.ID == "capacity" {
+				continue
+			} // Static inventory, no repeated reads.
+			m.MaxAgeMS = (3 * profile.Fast).Milliseconds()
+			if m.Source == "Win32_LogicalDisk" || m.Source == "ATA SMART" || m.Source == "NVMe SMART" || m.Source == "Windows Storage" {
+				m.MaxAgeMS = (2 * profile.Slow).Milliseconds()
+			}
+			m.Expire(now)
+		}
+	}
 }
 
 // Counters are read from physical device handles, never inferred from volumes.
@@ -411,6 +470,10 @@ func (a *windowsAdapter) sampleDiskIO(ctx context.Context, components []model.Co
 		}
 		missing(c, "read", "Чтение", "B/s", "Ожидание второго измерения или счётчик недоступен", false)
 		missing(c, "write", "Запись", "B/s", "Ожидание второго измерения или счётчик недоступен", false)
+		missing(c, "readLatency", "Задержка чтения", "ms", "Нет операций за измеренный интервал или счётчик недоступен", false)
+		missing(c, "writeLatency", "Задержка записи", "ms", "Нет операций за измеренный интервал или счётчик недоступен", false)
+		missing(c, "activity", "Активность", "%", "Ожидание второго измерения или счётчик недоступен", false)
+		missing(c, "queueDepth", "Очередь I/O", "", "Счётчик недоступен", false)
 		if ctx.Err() != nil {
 			continue
 		}
@@ -423,6 +486,7 @@ func (a *windowsAdapter) sampleDiskIO(ctx context.Context, components []model.Co
 			continue
 		}
 		next[c.ID] = current
+		c.Set(model.Known("queueDepth", "Очередь I/O", "", "IOCTL_DISK_PERFORMANCE", float64(current.queueDepth), false))
 		old, was := a.previousDisks[c.ID]
 		if !was {
 			continue
@@ -432,6 +496,20 @@ func (a *windowsAdapter) sampleDiskIO(ctx context.Context, components []model.Co
 		if rx != nil && tx != nil {
 			c.Set(model.Known("read", "Чтение", "B/s", "IOCTL_DISK_PERFORMANCE", *rx, false))
 			c.Set(model.Known("write", "Запись", "B/s", "IOCTL_DISK_PERFORMANCE", *tx, false))
+		}
+		for _, latency := range []struct {
+			id, label string
+			value     *float64
+		}{
+			{"readLatency", "Задержка чтения", diskLatency(old.readTime, current.readTime, old.readCount, current.readCount)},
+			{"writeLatency", "Задержка записи", diskLatency(old.writeTime, current.writeTime, old.writeCount, current.writeCount)},
+		} {
+			if latency.value != nil {
+				c.Set(model.Known(latency.id, latency.label, "ms", "IOCTL_DISK_PERFORMANCE", *latency.value, false))
+			}
+		}
+		if activity := diskActivity(old, current); activity != nil {
+			c.Set(model.Known("activity", "Активность", "%", "IOCTL_DISK_PERFORMANCE", *activity, false))
 		}
 	}
 	a.previousDisks = next

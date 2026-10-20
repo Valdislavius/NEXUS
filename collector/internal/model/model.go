@@ -24,6 +24,8 @@ type Metric struct {
 	Source      string      `json:"source"`
 	Reason      string      `json:"reason,omitempty"`
 	At          string      `json:"at"`
+	Status      string      `json:"status"`
+	MaxAgeMS    int64       `json:"maxAgeMs,omitempty"`
 	Primary     bool        `json:"primary"`
 	Description string      `json:"description,omitempty"`
 	Diagnostic  *Diagnostic `json:"diagnostic,omitempty"`
@@ -72,10 +74,26 @@ func Known(id, label, unit, source string, value float64, primary bool) Metric {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
 		return MissingDiagnostic(id, label, unit, source, "Источник вернул некорректное значение", "invalid_response", "VALUE_INVALID", primary)
 	}
-	return Metric{ID: id, Label: label, Unit: unit, Source: source, Value: &value, At: Now(), Primary: primary}
+	return Metric{ID: id, Label: label, Unit: unit, Source: source, Value: &value, At: Now(), Status: "available", Primary: primary}
 }
 func Missing(id, label, unit, source, reason string, primary bool) Metric {
-	return Metric{ID: id, Label: label, Unit: unit, Source: source, Reason: reason, At: Now(), Primary: primary}
+	return Metric{ID: id, Label: label, Unit: unit, Source: source, Reason: reason, At: Now(), Status: "unavailable", Primary: primary}
+}
+
+// Expire retains the acquisition timestamp, source and unit, but never forwards
+// an old numeric reading as current telemetry after sleep or a stalled provider.
+func (m *Metric) Expire(now time.Time) {
+	if m.Value == nil || m.MaxAgeMS <= 0 {
+		return
+	}
+	at, err := time.Parse(time.RFC3339Nano, m.At)
+	if err == nil && now.Sub(at) >= 0 && now.Sub(at) <= time.Duration(m.MaxAgeMS)*time.Millisecond {
+		return
+	}
+	m.Value = nil
+	m.Status = "stale"
+	m.Reason = "Данные устарели; ожидание нового измерения"
+	m.Diagnostic = &Diagnostic{Status: "stale", Code: "METRIC_EXPIRED"}
 }
 func MissingDiagnostic(id, label, unit, source, reason, status, code string, primary bool) Metric {
 	m := Missing(id, label, unit, source, reason, primary)

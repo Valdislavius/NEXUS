@@ -14,6 +14,7 @@ import (
 type Command struct {
 	Command    string `json:"command"`
 	IntervalMS int    `json:"intervalMs"`
+	Profile    string `json:"profile"`
 }
 
 func Run(ctx context.Context, a platform.Adapter, out io.Writer, commands <-chan Command) error {
@@ -31,6 +32,10 @@ func Run(ctx context.Context, a platform.Adapter, out io.Writer, commands <-chan
 		return nil
 	}
 	interval := 2 * time.Second
+	if a, ok := a.(platform.ProfileAdapter); ok {
+		profile, _ := platform.Profile("balanced")
+		a.SetProfile(profile)
+	}
 	for {
 		snap.Components, snap.Warnings = a.Sample(ctx, snap.Components)
 		if err := emit(); err != nil {
@@ -48,8 +53,20 @@ func Run(ctx context.Context, a platform.Adapter, out io.Writer, commands <-chan
 					commands = nil
 					continue
 				}
-				if cmd.Command == "interval" && (cmd.IntervalMS == 2000 || cmd.IntervalMS == 5000 || cmd.IntervalMS == 10000) {
+				if cmd.Command == "profile" {
+					if profile, valid := platform.Profile(cmd.Profile); valid {
+						interval = profile.Fast
+						if a, ok := a.(platform.ProfileAdapter); ok {
+							a.SetProfile(profile)
+						}
+						timer.Reset(interval)
+					}
+				}
+				if cmd.Command == "interval" && (cmd.IntervalMS == 1000 || cmd.IntervalMS == 2000 || cmd.IntervalMS == 5000 || cmd.IntervalMS == 10000) {
 					interval = time.Duration(cmd.IntervalMS) * time.Millisecond
+					if a, ok := a.(platform.IntervalAdapter); ok {
+						a.SetInterval(interval)
+					}
 					timer.Reset(interval)
 				}
 				if cmd.Command == "stop" {

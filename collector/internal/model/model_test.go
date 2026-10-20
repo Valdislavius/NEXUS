@@ -29,3 +29,29 @@ func TestRate(t *testing.T) {
 		t.Fatal("incorrect rate")
 	}
 }
+
+func TestAvailabilityAndExpiration(t *testing.T) {
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	m := Known("temperature", "Temperature", "°C", "test", 40, true)
+	m.At, m.MaxAgeMS = now.Add(-5*time.Second).Format(time.RFC3339Nano), 6000
+	m.Expire(now)
+	if m.Status != "available" || m.Value == nil {
+		t.Fatal("fresh cached sample discarded")
+	}
+	originalAt := m.At
+	m.Expire(now.Add(2 * time.Second))
+	if m.Status != "stale" || m.Value != nil || m.At != originalAt || m.Diagnostic.Code != "METRIC_EXPIRED" {
+		t.Fatalf("invalid stale sample: %+v", m)
+	}
+	if m := Missing("x", "X", "%", "test", "not supported", true); m.Status != "unavailable" || m.Value != nil {
+		t.Fatal("missing sensor status")
+	}
+	for _, at := range []string{"invalid", now.Add(time.Minute).Format(time.RFC3339Nano)} {
+		m := Known("x", "X", "%", "test", 0, true)
+		m.At, m.MaxAgeMS = at, 5000
+		m.Expire(now)
+		if m.Value != nil || m.Status != "stale" {
+			t.Fatal("invalid/future timestamp accepted")
+		}
+	}
+}
