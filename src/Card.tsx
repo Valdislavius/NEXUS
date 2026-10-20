@@ -70,6 +70,7 @@ export function Card({ component: c, position = 0 }: { component: Component; pos
         <span className={`card-caption ${health?.warning ? 'warning' : ''}`}>{health ? health.label : c.kind === 'storage' ? 'Физический накопитель' : c.kind === 'motherboard' || c.kind === 'system' ? 'Сведения об устройстве' : 'Текущие показатели'}<span>{open ? 'Свернуть' : 'Подробнее'}</span></span>
       </div>
     </button>
-    <div className="card-expansion" id={`detail-${c.id}`} hidden={!open}><div className="detail-heading"><div><span>{kindNames[c.kind]}</span><h2>{componentTitle(c)}</h2></div><button onClick={() => setOpen(false)} aria-label={`Свернуть ${componentTitle(c)}`}>Свернуть <ChevronDown size={15}/></button></div><Details component={c} /></div>
+    <div className="card-expansion" id={`detail-${c.id}`} hidden={!open}>{open && <><div className="detail-heading"><div><span>{kindNames[c.kind]}</span><h2>{componentTitle(c)}</h2></div><button onClick={() => setOpen(false)} aria-label={`Свернуть ${componentTitle(c)}`}>Свернуть <ChevronDown size={15}/></button></div><Details component={c} /></>}</div>
   </article>;
 }
+

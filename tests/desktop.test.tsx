@@ -31,3 +31,16 @@ test('stale transport cannot keep diagnostics presented as a fresh normal state'
  const view = render(<AppView monitor={{ snapshot, error: '', interval: 2000, changeInterval: vi.fn(), restart: vi.fn(), restarting: false, stale: true }} diagnostics={{ atMs: Date.now(), state: 'normal', findings: [], availableSensors: 1, totalSensors: 2, fresh: true }} />);
  expect(view.getByText('Недостаточно свежих данных')).toBeVisible(); fireEvent.click(view.getByRole('button', { name: 'Диагностика и тесты', exact: true })); expect(view.getByRole('heading', { name: 'Недостаточно данных', exact: true })).toBeVisible(); expect(view.queryByText('СВЕЖИЕ ДАННЫЕ')).toBeNull();
 });
+
+test('historical provider unit changes render on separate charts', async () => {
+ const tempComponent = { ...component, metrics: [component.metrics[1]] };
+ vi.mocked(invoke).mockResolvedValue([{ componentId: 'cpu', metricId: 'temperature', unit: '°C', source: 'provider-A', points: [], min: null, max: null, avg: null }, { componentId: 'cpu', metricId: 'temperature', unit: 'K', source: 'provider-B', points: [], min: null, max: null, avg: null }]);
+ const view = render(<HistoryChart component={tempComponent} at={at} enabled />);
+ expect(await view.findByRole('img', { name: 'История, °C' })).toBeVisible(); expect(view.getByRole('img', { name: 'История, K' })).toBeVisible(); expect(view.getByText('· provider-A')).toBeVisible(); expect(view.getByText('· provider-B')).toBeVisible();
+});
+
+test('collapsed overview cards do not mount detailed sensor grids', async () => {
+ const { Card } = await import('../src/Card');
+ const view = render(<Card component={{ ...component, metrics: [...component.metrics, { ...component.metrics[0], id: 'thread-0', label: 'Поток 00', primary: false }] }} />);
+ expect(view.queryByText('Загрузка потоков')).toBeNull(); fireEvent.click(view.getByRole('button', { expanded: false })); expect(view.getByRole('heading', { name: /Загрузка потоков/ })).toBeVisible();
+});

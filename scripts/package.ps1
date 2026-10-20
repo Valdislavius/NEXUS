@@ -18,13 +18,17 @@ try {
     $portableZip = Join-Path $releaseRoot "NEXUS-Desktop-${version}-portable-windows-x64.zip"
     Compress-Archive -Path "$portableRoot/*" -DestinationPath $portableZip -Force
     $hashFiles = @((Join-Path $installerRoot 'NEXUS-Setup.exe'),(Join-Path $portableRoot 'NEXUS.exe'),(Join-Path $portableRoot 'nexus-collector.exe'),$portableZip)
-    $sourcePaths = @('src','tests','collector','scripts','docs','src-tauri/src','src-tauri/icons','src-tauri/capabilities','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/build.rs','src-tauri/tauri.conf.json','src-tauri/windows-app-manifest.xml','package.json','package-lock.json','tsconfig.json','vite.config.ts','index.html','README.md','.gitignore')
+    # Package the same ordinary source tree as Git, including the independent
+    # website. Dependencies, databases, tokens and generated files are ignored.
+    $sourcePaths = @(git ls-files --cached --others --exclude-standard | Sort-Object -Unique)
+    if ($LASTEXITCODE -ne 0 -or $sourcePaths.Count -lt 10) { throw 'Cannot enumerate repository sources' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $sourceZip = Join-Path $releaseRoot "NEXUS-Desktop-${version}-source.zip"
     if (Test-Path -LiteralPath $sourceZip) { Remove-Item -LiteralPath $sourceZip }
     $archive = [IO.Compression.ZipFile]::Open($sourceZip, [IO.Compression.ZipArchiveMode]::Create)
     try {
         foreach ($sourcePath in $sourcePaths) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root $sourcePath))) { continue }
             $sourceItem = Get-Item -LiteralPath (Join-Path $root $sourcePath)
             $sourceFiles = if ($sourceItem.PSIsContainer) { Get-ChildItem -LiteralPath $sourceItem.FullName -Recurse -File } else { @($sourceItem) }
             foreach ($sourceFile in $sourceFiles) {
