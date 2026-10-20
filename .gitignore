@@ -1,0 +1,11 @@
+node_modules/
+.tools/
+src-tauri/target/
+src-tauri/binaries/*.exe
+dist/
+release/
+artifacts/
+*.log
+collector/nexus-collector.exe
+
+*.tsbuildinfo

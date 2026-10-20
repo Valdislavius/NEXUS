@@ -1,0 +1,26 @@
+[
+  {
+    "file": "NEXUS-Setup.exe",
+    "url": "https://github.com/Valdislavius/NEXUS/releases/download/v0.3.1/NEXUS-Setup.exe",
+    "status": 200,
+    "contentLength": [
+      "218827969"
+    ],
+    "contentType": [
+      "application/octet-stream"
+    ],
+    "verifiedAtUtc": "2026-10-08T12:32:16.8110543Z"
+  },
+  {
+    "file": "NEXUS-Desktop-0.3.1-portable-windows-x64.zip",
+    "url": "https://github.com/Valdislavius/NEXUS/releases/download/v0.3.1/NEXUS-Desktop-0.3.1-portable-windows-x64.zip",
+    "status": 200,
+    "contentLength": [
+      "4480407"
+    ],
+    "contentType": [
+      "application/octet-stream"
+    ],
+    "verifiedAtUtc": "2026-10-08T12:32:18.3107009Z"
+  }
+]

@@ -1,0 +1,16 @@
+node_modules
+.next
+out
+artifacts
+qa
+test-results
+test-results-docker
+playwright-report
+playwright-report-docker
+.git
+.codex
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo

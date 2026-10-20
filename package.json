@@ -1,0 +1,11 @@
+{
+  "name": "nexus-desktop", "version": "0.3.1", "private": true, "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1", "build": "tsc -b && vite build",
+    "typecheck": "tsc -b", "test": "vitest run", "tauri": "tauri",
+    "collector:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-collector.ps1",
+    "desktop:dev": "npm run collector:build && tauri dev", "desktop:build": "npm run collector:build && tauri build"
+  },
+  "dependencies": { "@tauri-apps/api": "^2.10.1", "react": "^19.2.0", "react-dom": "^19.2.0", "lucide-react": "^0.577.0", "zod": "^4.3.6" },
+  "devDependencies": { "@tauri-apps/cli": "^2.10.1", "@types/react": "^19.2.14", "@types/react-dom": "^19.2.3", "@vitejs/plugin-react": "^5.1.4", "typescript": "^5.9.3", "vite": "^7.3.1", "vitest": "^4.0.18", "@testing-library/react": "^16.3.2", "@testing-library/jest-dom": "^6.9.1", "jsdom": "^28.1.0" }
+}

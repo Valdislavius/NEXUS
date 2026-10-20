@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Local application window; no filesystem, network or shell access from the frontend","local":true,"windows":["main"],"permissions":["core:default"]}}
