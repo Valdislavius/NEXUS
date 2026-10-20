@@ -41,7 +41,7 @@ jobs:
       - name: Test native services
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: Build native application
-        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --features tauri/custom-protocol
   website:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -1,18 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NEXUS Desktop",
-  "version": "0.3.1",
+  "version": "1.0.0-beta.1",
   "identifier": "local.nexus.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "NEXUS Desktop · Alpha 0.3.1",
+        "title": "NEXUS Desktop · 1.0 Preview",
+        "create": false,
         "width": 1280,
         "height": 900,
         "minWidth": 600,

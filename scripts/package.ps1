@@ -22,6 +22,7 @@ try {
     # website. Dependencies, databases, tokens and generated files are ignored.
     $sourcePaths = @(git ls-files --cached --others --exclude-standard | Sort-Object -Unique)
     if ($LASTEXITCODE -ne 0 -or $sourcePaths.Count -lt 10) { throw 'Cannot enumerate repository sources' }
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $sourceZip = Join-Path $releaseRoot "NEXUS-Desktop-${version}-source.zip"
     if (Test-Path -LiteralPath $sourceZip) { Remove-Item -LiteralPath $sourceZip }

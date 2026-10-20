@@ -1,6 +1,7 @@
 #requires -Version 7.0
 param(
     [Parameter(Mandatory=$true)][string]$Executable,
+    [int]$ExistingProcessId = 0,
     [string[]]$ApplicationArguments = @(),
     [int]$Seconds = 60,
     [int]$WarmupSeconds = 10,
@@ -21,8 +22,10 @@ $startInfo.CreateNoWindow = $true
 $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
 foreach ($argument in $ApplicationArguments) { $startInfo.ArgumentList.Add($argument) }
 if ($CollectorMode) { $startInfo.RedirectStandardInput = $true; $startInfo.RedirectStandardOutput = $true; $startInfo.RedirectStandardError = $true }
-$application = [Diagnostics.Process]::new()
-$application.StartInfo = $startInfo
+$ownsProcess = $ExistingProcessId -le 0
+if (-not $ownsProcess -and $CollectorMode) { throw 'CollectorMode requires ownership of stdin/stdout' }
+$application = if ($ownsProcess) { [Diagnostics.Process]::new() } else { [Diagnostics.Process]::GetProcessById($ExistingProcessId) }
+if ($ownsProcess) { $application.StartInfo = $startInfo }
 $samples = [Collections.Generic.List[object]]::new()
 $knownIds = [Collections.Generic.HashSet[int]]::new()
 $seenCpu = @{}
@@ -32,7 +35,7 @@ $readerTask = $null
 $logicalProcessors = [Environment]::ProcessorCount
 $startedAt = [DateTimeOffset]::UtcNow
 try {
-    if (-not $application.Start()) { throw 'Application did not start' }
+    if ($ownsProcess -and -not $application.Start()) { throw 'Application did not start' }
     $knownIds.Add($application.Id) | Out-Null
     if ($CollectorMode) {
         $application.StandardInput.WriteLine('{"command":"profile","profile":"' + $Profile + '"}')
@@ -83,6 +86,7 @@ try {
     }
     $result = [ordered]@{
         recordedAt=$startedAt.ToString('o'); executable=$resolvedExecutable; sha256=(Get-FileHash -LiteralPath $resolvedExecutable -Algorithm SHA256).Hash
+        attachedToExistingProcess=(-not $ownsProcess)
         mode=$(if ($CollectorMode) {'collector-only'} else {'application-process-tree'}); profile=$Profile; logicalProcessors=$logicalProcessors
         warmupSeconds=$WarmupSeconds; requestedMeasurementSeconds=$Seconds; sampleCount=$samples.Count
         averageCpuPercent=($samples | Measure-Object cpuPercent -Average).Average
@@ -99,7 +103,7 @@ try {
     $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $outputPath -Encoding utf8
     [pscustomobject]$result | Select-Object mode,profile,sampleCount,averageCpuPercent,maximumCpuPercent,averageWorkingSetMiB,maximumWorkingSetMiB,maximumProcesses,readySnapshots | Format-List
 } finally {
-    if ($application.Id -and -not $application.HasExited) {
+    if ($ownsProcess -and $application.Id -and -not $application.HasExited) {
         if ($CollectorMode) { $application.StandardInput.Close(); $application.WaitForExit(5000) | Out-Null }
         if (-not $application.HasExited) { $application.Kill($true); $application.WaitForExit() }
     }

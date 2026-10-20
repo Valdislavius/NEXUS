@@ -10,5 +10,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Go build failed' }
 } finally { Pop-Location }
 
-# Keep the source corresponding to the embedded LGPL module available to recipients.
-Compress-Archive -Path (Join-Path $root 'collector/*') -DestinationPath (Join-Path $root 'docs/PawnIO/NEXUS-collector-source.zip') -Force
+# Keep corresponding source available without bundling built executables/caches.
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$collectorSourceZip = Join-Path $root 'docs/PawnIO/NEXUS-collector-source.zip'
+if (Test-Path -LiteralPath $collectorSourceZip) { Remove-Item -LiteralPath $collectorSourceZip }
+$collectorArchive = [IO.Compression.ZipFile]::Open($collectorSourceZip, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    $collectorSourceRoot = Join-Path $root 'collector'
+    foreach ($source in Get-ChildItem -LiteralPath $collectorSourceRoot -Recurse -File) {
+        if ($source.Extension -eq '.exe' -or $source.Name -like '*.log' -or $source.Name -like '*.test') { continue }
+        $sourceEntry = $source.FullName.Substring($collectorSourceRoot.Length + 1).Replace('\','/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($collectorArchive, $source.FullName, $sourceEntry, [IO.Compression.CompressionLevel]::Optimal) | Out-Null
+    }
+} finally { $collectorArchive.Dispose() }
