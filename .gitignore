@@ -1,0 +1,27 @@
+node_modules/
+.tools/
+src-tauri/target/
+src-tauri/binaries/*.exe
+dist/
+release/
+artifacts/
+*.log
+collector/nexus-collector.exe
+
+*.tsbuildinfo
+
+# Machine-local history, settings, exports and credentials
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.dmp
+*.pfx
+*.key
+exports/
+reports/
+website/qa/

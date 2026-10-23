@@ -1,0 +1,53 @@
+import { useEffect, useState } from 'react';
+import { Play, Square, ShieldCheck, AlertTriangle, ArrowUpRight } from 'lucide-react';
+import { isTauri } from '@tauri-apps/api/core';
+import { desktopCall, timeLabel, stateLabels } from './desktop';
+import type { BenchmarkKind, BenchmarkResult, Diagnostics, Finding, TimelineEvent } from './desktop';
+import { formatMetric } from './model';
+export { Reports } from './Reports';
+export const tests: { kind: BenchmarkKind; title: string; component: string; detail: string; warning: string }[] = [
+  { kind: 'cpu_single', title: 'CPU · один поток', component: 'cpu', detail: 'Короткое вычисление в одном рабочем потоке.', warning: 'Создаёт вычислительную нагрузку. Прекращается при подтверждённом перегреве.' },
+  { kind: 'cpu_multi', title: 'CPU · несколько потоков', component: 'cpu', detail: 'До 16 потоков, нагрузка с ограничением рабочего цикла 50%.', warning: 'Может повлиять на отзывчивость и температуру ПК. Закройте игры перед запуском.' },
+  { kind: 'memory', title: 'Проверка блока RAM', component: 'ram', detail: 'Выделение, запись и проверка ограниченного блока памяти.', warning: 'Проверяет только собственный выделенный блок. Успешный результат не исключает неисправности всей RAM.' },
+  { kind: 'storage_read', title: 'Чтение и отклик', component: 'storage', detail: 'Ограниченное чтение исполняемого файла NEXUS.', warning: 'Без записи на диск. Скорость зависит от кэша и не является полной оценкой накопителя.' },
+  { kind: 'network_dns', title: 'Доступность DNS', component: 'network', detail: 'Однократное ограниченное разрешение имени.', warning: 'Создаёт один сетевой запрос. Результат зависит от доступности DNS и подключения.' },
+  { kind: 'network_ping', title: 'Ping · 4 запроса', component: 'network', detail: 'Четыре ручных ICMP-запроса к 1.1.1.1, не более 4 секунд.', warning: 'Создаёт ограниченный сетевой трафик. Ответы могут блокироваться брандмауэром: потери пакетов не подтверждают аппаратную неисправность.' },
+  { kind: 'network_traceroute', title: 'Traceroute · до 8 узлов', component: 'network', detail: 'Ручная трассировка к 1.1.1.1: до 24 TTL-проб, не более 15 секунд.', warning: 'Создаёт ограниченный сетевой трафик без обратного DNS. Маршрутизаторы могут не отвечать на пробы. Адреса узлов и исходный вывод в результат не сохраняются.' },
+  { kind: 'motherboard', title: 'Контроллеры и датчики', component: 'motherboard', detail: 'До 20 событий WHEA за 24 часа и состояния системных PnP-контроллеров.', warning: 'Однократное чтение журнала Windows и локальных состояний устройств. Без нагрузки на контроллеры. Отсутствие предупреждений не доказывает исправность.' },
+];
+const resultLabels: Record<BenchmarkResult['status'], string> = { running: 'Выполняется', completed: 'Завершено', cancelled: 'Отменено', failed: 'Ошибка', stopped: 'Остановлено защитой' };
+export function Timeline({ events, compact = false, onOpenEvent, canOpenEvent }: { events: TimelineEvent[]; compact?: boolean; onOpenEvent?: (event: TimelineEvent) => void; canOpenEvent?: (event: TimelineEvent) => boolean }) {
+  return <section className="panel timeline-panel"><div className="panel-title"><div><span className="eyebrow">NEXUS TIMELINE</span><h2>Значимые события</h2></div><span className="tag">{events.length}</span></div>{!events.length ? <p className="empty-inline">За выбранный период значимые события ещё не зарегистрированы.</p> : <ol className="timeline">{events.slice(0, compact ? 5 : 80).map(e => <li key={e.id} className={e.severity}><i /><time>{timeLabel(e.atMs)}</time><div><strong>{e.title}</strong><p>{e.details}</p><span>{e.source} · {e.componentId || 'Система'}</span>{onOpenEvent && (!canOpenEvent || canOpenEvent(e)) && <button className="text-button timeline-open" aria-label={`Открыть данные: ${e.title}`} onClick={() => onOpenEvent(e)}>Открыть данные<ArrowUpRight size={12} /></button>}</div></li>)}</ol>}</section>;
+}
+export function Findings({ findings }: { findings: Finding[] }) {
+  return <div className="findings">{findings.map(f => <details key={f.id} className={`finding ${f.severity}`}><summary><AlertTriangle size={17} /><strong>{f.title}</strong><span>{f.componentKind} · {timeLabel(f.atMs)}</span></summary><div><p><b>Показатели: </b>{typeof f.actual === 'string' ? f.actual : <>{formatMetric(f.actual)}{f.actual.threshold != null && ` · Порог ${formatMetric({ value: f.actual.threshold, unit: f.actual.unit })}`}{f.actual.previous != null && ` · Ранее ${formatMetric({ value: f.actual.previous, unit: f.actual.unit })}`}</>}</p><p><b>Причина правила: </b>{f.reason}</p>{f.explanations?.length > 0 && <><h3>Возможные объяснения</h3><ul>{f.explanations.map(a => <li key={a}>{a}</li>)}</ul></>}{f.actions?.length > 0 && <><h3>Рекомендуемые действия</h3><ul>{f.actions.map(a => <li key={a}>{a}</li>)}</ul></>}<p className="small">Это наблюдение по телеметрии, а не подтверждённый диагноз аппаратной неисправности.</p></div></details>)}</div>;
+}
+export function DiagnosticSummary({ diagnostics }: { diagnostics: Diagnostics | null }) {
+  return <div className={`diagnostic-banner ${diagnostics?.state || 'insufficient_data'}`}><ShieldCheck size={26} /><div><h2>{diagnostics ? stateLabels[diagnostics.state] : 'Недостаточно данных'}</h2><p>{diagnostics ? `${diagnostics.availableSensors} из ${diagnostics.totalSensors} датчиков доступны · ${diagnostics.findings.length} активных предупреждений` : 'Для диагностики нужны свежие показания от настольного сборщика.'}</p></div><span className="tag">{diagnostics?.fresh ? 'СВЕЖИЕ ДАННЫЕ' : 'ОЖИДАНИЕ'}</span></div>;
+}
+export function Benchmarks({ componentKind, enabled = false }: { componentKind?: string; enabled?: boolean }) {
+  const [current, setCurrent] = useState<BenchmarkResult | null>(null), [history, setHistory] = useState<BenchmarkResult[]>([]), [confirm, setConfirm] = useState<BenchmarkKind | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(''), [historyError, setHistoryError] = useState('');
+  const active = current?.status === 'running';
+  useEffect(() => { let gone = false; if (enabled) void desktopCall<BenchmarkResult | null>('benchmark_status').then(result => { if (!gone) setCurrent(result); }).catch(() => { if (!gone) setError('Не удалось получить состояние теста.'); }); return () => { gone = true; }; }, [enabled]);
+  useEffect(() => {
+    let gone = false;
+    if (enabled) void desktopCall<BenchmarkResult[]>('benchmark_history').then(rows => { if (!gone) { setHistory(rows); setHistoryError(''); } }).catch(() => { if (!gone) setHistoryError('История проверок временно недоступна.'); });
+    return () => { gone = true; };
+  }, [enabled, current?.id, active]);
+  useEffect(() => {
+    if (!active || !enabled) return;
+    let gone = false;
+    const timer = window.setInterval(() => { void desktopCall<BenchmarkResult | null>('benchmark_status').then(result => { if (!gone) setCurrent(result); }).catch(() => { if (!gone) setError('Не удалось получить состояние теста.'); }); }, 500);
+    return () => { gone = true; window.clearInterval(timer); };
+  }, [active, enabled]);
+  async function run(kind: BenchmarkKind) { setBusy(true); setError(''); setConfirm(null); try { setCurrent(await desktopCall<BenchmarkResult>('benchmark_start', { request: { kind, durationSeconds: 5 } })); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
+  async function cancel() { setBusy(true); try { await desktopCall('benchmark_cancel'); setError(''); } catch { setError('Не удалось передать запрос остановки.'); } finally { setBusy(false); } }
+  const visibleTests = tests.filter(t => !componentKind || t.component === componentKind);
+  return <section className="panel benchmark-panel"><div className="panel-title"><div><span className="eyebrow">ТОЛЬКО РУЧНОЙ ЗАПУСК</span><h2>Безопасные проверки</h2></div><ShieldCheck size={22} /></div><p className="panel-description">Benchmark измеряет производительность в заданных условиях. Проверка блока или датчика имеет ограниченный охват и не подтверждает исправность всего устройства.</p>
+    {componentKind === 'gpu' && <div className="empty-inline">GPU benchmark и проверка VRAM пока недоступны. Драйверные показатели отображаются без внедрения в игры и вмешательства в античит.</div>}
+    <div className="test-grid">{visibleTests.map(t => <article className="test-card" key={t.kind}><h3>{t.title}</h3><p>{t.detail}</p>{confirm === t.kind ? <div className="test-confirm"><p>{t.warning}</p><button className="primary-button" disabled={busy || active} onClick={() => void run(t.kind)}>{t.kind.startsWith('cpu_') ? 'Запустить на 5 секунд' : t.kind === 'network_ping' ? 'Отправить 4 запроса' : 'Запустить проверку'}</button><button className="text-button" onClick={() => setConfirm(null)}>Назад</button></div> : <button className="secondary-button" onClick={() => setConfirm(t.kind)} disabled={!enabled || !isTauri() || busy || active}><Play size={14} />Начать проверку</button>}</article>)}</div>
+    {current && <div className="test-progress"><div><strong>{tests.find(t => t.kind === current.kind)?.title} · {resultLabels[current.status]}</strong><span>{Math.round(current.progress)}%</span></div><progress max="100" value={current.progress} />{active && <button className="secondary-button" disabled={busy} onClick={() => void cancel()}><Square size={13} />Остановить</button>}<p>{current.details}{current.error && ` · ${current.error}`}</p>{current.score != null && <p>Результат: {current.score.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} {current.unit}</p>}</div>}
+    {(error || historyError) && <p role="alert" className="setting-error">{error || historyError}</p>}{!enabled && <p className="small muted">Запуск проверок доступен в настольном приложении.</p>}
+    {history.length > 0 && <details className="test-history"><summary>История проверок · {history.length}</summary><div className="table-scroll"><table><thead><tr><th>Время</th><th>Проверка</th><th>Состояние</th><th>Результат</th></tr></thead><tbody>{history.map(r => <tr key={r.id}><td>{timeLabel(r.startedAtMs)}</td><td>{tests.find(t => t.kind === r.kind)?.title}</td><td>{resultLabels[r.status]}</td><td>{r.score != null ? `${r.score.toLocaleString('ru-RU')} ${r.unit || ''}` : r.error || '—'}</td></tr>)}</tbody></table></div></details>}
+  </section>;
+}

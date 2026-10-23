@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+test-results/
+playwright-report/
+test-results-docker/
+playwright-report-docker/
+*.tsbuildinfo
+.env.local
+*.log
