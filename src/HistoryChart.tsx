@@ -6,6 +6,9 @@ import type { Component } from './model';
 import { formatMetric } from './model';
 
 type ChartPrefs = { duration: number; ids: string[] };
+export type HistoryFocus = { request: number; eventId: string; atMs: number; title: string; metricId?: string };
+const focusDuration = 300000;
+const focusEnd = (focus: HistoryFocus) => Math.min(Date.now(), focus.atMs + focusDuration / 2);
 export function boundedPoints<T>(points: T[], max = 300): T[] {
   if (max <= 0) return [];
   if (points.length <= max) return points;
@@ -39,24 +42,33 @@ export function stats(points: HistoryPoint[]) {
   const count = values.reduce((sum, p) => sum + Math.max(1, p.count), 0);
   return { min: values.length ? Math.min(...values.map(p => p.min ?? p.value!)) : null, max: values.length ? Math.max(...values.map(p => p.max ?? p.value!)) : null, avg: count ? values.reduce((sum, p) => sum + p.value! * Math.max(1, p.count), 0) / count : null };
 }
-const palette = ['#8ce5a3', '#8aafff', '#e9bc71', '#c397ef'];
+const palette = ['#8ce5a3', '#8aafff', '#e9bc71', '#c397ef', '#70d5d4', '#ed9fad', '#c9d576', '#c9c9df'];
 const seriesKey = (series: HistorySeries) => JSON.stringify([series.componentId, series.metricId, series.unit, series.source]);
 function loadPrefs(key: string): ChartPrefs | null { try { const value = JSON.parse(localStorage.getItem(key) || 'null'); return value && Array.isArray(value.ids) && value.ids.every((id: unknown) => typeof id === 'string') && Number.isFinite(value.duration) ? value : null; } catch { return null; } }
-export function HistoryChart({ component, at, events = [], enabled = false }: { component: Component; at: string; events?: TimelineEvent[]; enabled?: boolean }) {
+export function HistoryChart({ component, at, events = [], enabled = false, focus }: { component: Component; at: string; events?: TimelineEvent[]; enabled?: boolean; focus?: HistoryFocus }) {
   const storageKey = `nexus.chart.${component.id}`;
   const prefs = useMemo(() => loadPrefs(storageKey), [storageKey]);
   const metrics = component.metrics.filter(m => !m.id.startsWith('volume-total-'));
-  const [ids, setIds] = useState<string[]>(prefs?.ids?.filter(id => metrics.some(m => m.id === id)).slice(0, 4) || []);
+  const [ids, setIds] = useState<string[]>(focus?.metricId && metrics.some(m => m.id === focus.metricId) ? [focus.metricId] : prefs?.ids?.filter(id => metrics.some(m => m.id === id)).slice(0, 8) || []);
   const availableIds = ids.filter(id => metrics.some(m => m.id === id));
   const chosen = availableIds.length ? availableIds : metrics.filter(m => m.primary).slice(0, 1).map(m => m.id).concat(metrics.length ? [metrics[0].id] : []).slice(0, 1);
-  const [duration, setDuration] = useState(prefs?.duration && prefs.duration >= 60000 && prefs.duration <= 86400000 ? prefs.duration : 300000);
-  const [live, setLive] = useState(true), [end, setEnd] = useState(Date.now()), [compare, setCompare] = useState(false);
+  const [duration, setDuration] = useState(focus ? focusDuration : prefs?.duration && prefs.duration >= 60000 && prefs.duration <= 86400000 ? prefs.duration : focusDuration);
+  const [live, setLive] = useState(!focus), [end, setEnd] = useState(focus ? focusEnd(focus) : Date.now()), [compare, setCompare] = useState(false);
   const [series, setSeries] = useState<HistorySeries[]>([]), [previous, setPrevious] = useState<HistorySeries[]>([]), [message, setMessage] = useState('');
+  const [metricSearch, setMetricSearch] = useState(''), [metricPage, setMetricPage] = useState(0);
+  const matchingMetrics = metrics.filter(m => `${m.label} ${m.id} ${m.source}`.toLocaleLowerCase('ru-RU').includes(metricSearch.trim().toLocaleLowerCase('ru-RU')));
+  const pageCount = Math.max(1, Math.ceil(matchingMetrics.length / 24)), currentPage = Math.min(metricPage, pageCount - 1);
+  const visibleMetrics = matchingMetrics.slice(currentPage * 24, (currentPage + 1) * 24);
   const [hover, setHover] = useState<number | null>(null);
   const generation = useRef(0), canvas = useRef<SVGSVGElement>(null);
   const to = live ? Math.max(Date.parse(at) || Date.now(), Date.now()) : end;
   const from = to - duration, idKey = chosen.join('|');
   const sourceKey = JSON.stringify(chosen.map(id => { const m = metrics.find(m => m.id === id)!; return [id, m.unit, m.source]; }));
+  useEffect(() => {
+    if (!focus) return;
+    setDuration(focusDuration); setEnd(focusEnd(focus)); setLive(false); setHover(null); setCompare(false);
+    if (focus.metricId && metrics.some(m => m.id === focus.metricId)) setIds([focus.metricId]);
+  }, [focus?.request]);
   useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify({ duration, ids: chosen })); } catch { /* Storage may be unavailable in a restricted WebView. */ } }, [storageKey, duration, idKey]);
   useEffect(() => {
     const current = ++generation.current;
@@ -104,7 +116,10 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
   const eventList = events.filter(e => e.atMs >= from && e.atMs <= to && (!e.componentId || e.componentId === component.id));
   return <section className="panel history-panel" aria-label="Графики и история"><div className="panel-title"><div><span className="eyebrow">ИСТОРИЯ ПОКАЗАТЕЛЕЙ</span><h2>Активность во времени</h2></div><button className={`live-button ${live ? 'active' : ''}`} aria-pressed={live} onClick={() => { if (live) setEnd(to); setLive(!live); }}><Radio size={14} />Live</button></div>
     <div className="chart-toolbar"><div className="segmented">{[[300000, '5 мин'], [1800000, '30 мин'], [21600000, '6 ч'], [86400000, '24 ч']].map(([value, label]) => <button key={value} className={duration === value ? 'active' : ''} onClick={() => setDuration(Number(value))}>{label}</button>)}</div><div className="chart-tools"><button className="icon-button" aria-label="Предыдущий период" onClick={() => pan(-1)}><ChevronLeft size={16} /></button><button className="icon-button" aria-label="Следующий период" disabled={live || to >= Date.now()} onClick={() => pan(1)}><ChevronRight size={16} /></button><button className="icon-button" aria-label="Увеличить масштаб" onClick={() => setDuration(Math.max(60000, duration / 2))}><Plus size={16} /></button><button className="icon-button" aria-label="Уменьшить масштаб" onClick={() => setDuration(Math.min(86400000, duration * 2))}><Minus size={16} /></button><button className="icon-button" aria-label="Экспорт агрегированных точек графика CSV" onClick={exportCsv} disabled={!series.some(s => s.points.length)}><Download size={16} /></button></div></div>
-    <div className="metric-selectors">{metrics.slice(0, 48).map(m => <label key={m.id} className={chosen.includes(m.id) ? 'checked' : ''}><input type="checkbox" checked={chosen.includes(m.id)} disabled={!chosen.includes(m.id) && chosen.length >= 4} onChange={e => setIds(e.target.checked ? [...chosen, m.id] : chosen.filter(id => id !== m.id))} />{m.label}<small>{m.unit}</small></label>)}</div>
+    {focus && !live && <p className="chart-focus" role="status">Период события «{focus.title}» · {timeLabel(focus.atMs)}. Live вернёт текущие данные.</p>}
+    {metrics.length > 0 && <div className="metric-browser"><label>Поиск датчика<input type="search" value={metricSearch} onChange={e => { setMetricSearch(e.target.value); setMetricPage(0); }} placeholder="Название, источник или идентификатор" /></label><span>Выбрано {chosen.length} из 8 · найдено {matchingMetrics.length} из {metrics.length}</span>{pageCount > 1 && <div><button className="text-button" aria-label="Предыдущие датчики" disabled={currentPage === 0} onClick={() => setMetricPage(currentPage - 1)}>Назад</button><span>Страница {currentPage + 1} из {pageCount}</span><button className="text-button" aria-label="Следующие датчики" disabled={currentPage + 1 >= pageCount} onClick={() => setMetricPage(currentPage + 1)}>Далее</button></div>}</div>}
+    <div className="metric-selectors">{visibleMetrics.map(m => <label key={m.id} className={chosen.includes(m.id) ? 'checked' : ''}><input type="checkbox" checked={chosen.includes(m.id)} disabled={!chosen.includes(m.id) && chosen.length >= 8} onChange={e => setIds(e.target.checked ? [...chosen, m.id].slice(0, 8) : chosen.filter(id => id !== m.id))} />{m.label}<small>{m.unit}</small></label>)}</div>
+    {metrics.length > 0 && !matchingMetrics.length && <p className="empty-inline">По этому запросу датчики не найдены.</p>}
     {!metrics.length && <p className="empty-inline">Нет доступных рядов. Датчики этого компонента не предоставляют числовые показатели.</p>}
     {units.map(unit => {
       const group = series.filter(s => s.unit === unit), all = group.flatMap(s => s.points.flatMap(p => p.value === null ? [] : [p.max ?? p.value]));
@@ -112,15 +127,15 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
       const x = (v: number) => 45 + (v - from) / duration * 835, y = (v: number) => 168 - v / ymax * 140;
       return <div className="chart-unit" key={unit}><span className="axis-unit">{unit || 'Значение'}</span><svg ref={canvas} viewBox="0 0 920 200" role="img" aria-label={`История, ${unit || 'значения'}`} onPointerLeave={() => setHover(null)} onPointerMove={e => { const rect = e.currentTarget.getBoundingClientRect(); setHover(from + Math.min(1, Math.max(0, ((e.clientX - rect.left) / rect.width * 920 - 45) / 835)) * duration); }}>
         {[0, .5, 1].map(f => <g key={f}><line x1="45" y1={y(ymax * f)} x2="880" y2={y(ymax * f)} className="grid-line" /><text x="35" y={y(ymax * f) + 4} textAnchor="end">{formatMetric({ value: ymax * f, unit: unit === '%' ? '' : unit })}</text></g>)}
-        {group.map(s => { const segments = chartSegments(s.points, duration, metrics.find(m => m.id === s.metricId && m.unit === s.unit && m.source === s.source)?.maxAgeMs); return <g key={seriesKey(s)}><path d={chartPath(segments, x, y)} stroke={palette[series.indexOf(s) % 4]} className="chart-line" />{segments.filter(segment => segment.length === 1).map(([point], index) => <circle key={`${point.atMs}:${index}`} cx={x(point.atMs)} cy={y(point.value!)} r="3" fill={palette[series.indexOf(s) % 4]} />)}</g>; })}
+        {group.map(s => { const segments = chartSegments(s.points, duration, metrics.find(m => m.id === s.metricId && m.unit === s.unit && m.source === s.source)?.maxAgeMs); return <g key={seriesKey(s)}><path d={chartPath(segments, x, y)} stroke={palette[series.indexOf(s) % palette.length]} className="chart-line" />{segments.filter(segment => segment.length === 1).map(([point], index) => <circle key={`${point.atMs}:${index}`} cx={x(point.atMs)} cy={y(point.value!)} r="3" fill={palette[series.indexOf(s) % palette.length]} />)}</g>; })}
         {previous.filter(s => s.unit === unit).map(s => <path key={seriesKey(s)} d={chartPath(chartSegments(s.points, duration, metrics.find(m => m.id === s.metricId && m.unit === s.unit && m.source === s.source)?.maxAgeMs), x, y)} fill="none" stroke="#a5b7ac" strokeWidth="1.5" strokeDasharray="4 4" opacity=".55" />)}
-        {eventList.map(e => <line key={e.id} x1={x(e.atMs)} x2={x(e.atMs)} y1="23" y2="168" className={`event-line ${e.severity}`}><title>{e.title}</title></line>)}
+        {eventList.map(e => <line key={e.id} x1={x(e.atMs)} x2={x(e.atMs)} y1="23" y2="168" className={`event-line ${e.severity} ${e.id === focus?.eventId ? 'selected' : ''}`}><title>{e.title}</title></line>)}
         {hover !== null && <line x1={x(hover)} x2={x(hover)} y1="23" y2="168" className="hover-line" />}
         {[0, .5, 1].map(f => <text key={f} x={x(from + duration * f)} y="192" textAnchor={f === 0 ? 'start' : f === 1 ? 'end' : 'middle'}>{new Date(from + duration * f).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</text>)}
       </svg>{!all.length && <p className="chart-empty">Ожидаем данные за выбранный период</p>}</div>;
     })}
     {hover !== null && <div className="chart-tooltip"><span>{timeLabel(hover)}</span>{series.map(s => { const p = s.points.reduce<HistoryPoint | null>((nearest, p) => !nearest || Math.abs(p.atMs - hover) < Math.abs(nearest.atMs - hover) ? p : nearest, null); return <strong key={seriesKey(s)}>{component.metrics.find(m => m.id === s.metricId)?.label} · {s.source}: {p ? `${formatMetric({ value: p.value, unit: s.unit })} · ${timeLabel(p.atMs)}` : 'Нет данных'}</strong>; })}</div>}
-    <div className="chart-stats">{series.map((s, i) => <div key={seriesKey(s)}><i style={{ background: palette[i % 4] }} /><span>{component.metrics.find(m => m.id === s.metricId)?.label}{series.filter(row => row.metricId === s.metricId).length > 1 && <small> · {s.source}</small>}</span><span>Мин. <b>{formatMetric({ value: s.min, unit: s.unit })}</b></span><span>Сред. <b>{formatMetric({ value: s.avg, unit: s.unit })}</b></span><span>Макс. <b>{formatMetric({ value: s.max, unit: s.unit })}</b></span></div>)}</div>
+    <div className="chart-stats">{series.map((s, i) => <div key={seriesKey(s)}><i style={{ background: palette[i % palette.length] }} /><span>{component.metrics.find(m => m.id === s.metricId)?.label}{series.filter(row => row.metricId === s.metricId).length > 1 && <small> · {s.source}</small>}</span><span>Мин. <b>{formatMetric({ value: s.min, unit: s.unit })}</b></span><span>Сред. <b>{formatMetric({ value: s.avg, unit: s.unit })}</b></span><span>Макс. <b>{formatMetric({ value: s.max, unit: s.unit })}</b></span></div>)}</div>
     <div className="chart-foot"><label><input type="checkbox" checked={compare} onChange={e => setCompare(e.target.checked)} />Сравнить с предыдущим периодом</label><span>Агрегированные точки · до 300 на ряд · {timeLabel(from)} — {timeLabel(to)}</span></div>{message && <p className="small muted">{message}</p>}
   </section>;
 }

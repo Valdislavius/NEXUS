@@ -1,7 +1,7 @@
 //! Diagnostics consume collected metrics only; they never probe devices.
 use crate::{
     settings::Thresholds,
-    storage::{now_ms, parse_ms, Event},
+    storage::{now_ms, Event},
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -16,22 +16,11 @@ pub struct Engine {
 // Apply the same availability contract when raising, retaining and resolving a
 // finding. A slow SMART reading can remain fresh for longer than fast telemetry.
 fn available_reading(metric: &Value, kind: &str, now: i64) -> Option<(f64, i64)> {
-    if metric["status"]
-        .as_str()
-        .is_some_and(|status| status != "available")
-    {
-        return None;
-    }
-    let value = metric["value"].as_f64().filter(|v| v.is_finite())?;
-    let at = metric["at"].as_str().and_then(parse_ms)?;
-    let ttl =
-        metric["maxAgeMs"]
-            .as_i64()
-            .unwrap_or(if kind == "storage" { 180_000 } else { 20_000 });
-    if ttl < 0 || now.saturating_sub(at) > ttl || at > now.saturating_add(60_000) {
-        return None;
-    }
-    Some((value, at))
+    crate::metrics::reading(
+        metric,
+        now,
+        if kind == "storage" { 180_000 } else { 20_000 },
+    )
 }
 
 impl Engine {

@@ -21,6 +21,7 @@ mod diagnostics_engine;
 #[allow(dead_code)]
 mod elevation;
 mod instance;
+mod metrics;
 mod report;
 mod settings;
 mod storage;
@@ -578,6 +579,17 @@ fn self_check(folder: &std::path::Path) -> Result<Value, String> {
         to_ms: finished,
         max_points: Some(60),
     })?;
+    history.save_benchmark(&json!({"id":"synthetic-report-test","kind":"cpu_single","status":"completed","startedAtMs":now,"finishedAtMs":now+1,"progress":100,"score":1234.5,"unit":"operations/s","details":"+SYNTHETIC fixture; no workload executed","error":null}))?;
+    history.event(&storage::Event {
+        id: "synthetic-format-escaping".into(),
+        at_ms: now,
+        source: "diagnostics".into(),
+        component_id: "PRIVATE_CPU_SERIAL".into(),
+        severity: "info".into(),
+        title: "=1+1".into(),
+        details: "@SUM(1,2)\nQuoted \"fixture\"".into(),
+        data: json!({}),
+    })?;
     let mut outputs = Vec::new();
     for format in ["csv", "xlsx", "pdf"] {
         outputs.push(report::generate(
@@ -589,10 +601,34 @@ fn self_check(folder: &std::path::Path) -> Result<Value, String> {
                 to_ms: Some(finished),
                 components: None,
                 anonymized: Some(true),
+                sections: None,
             },
         )?);
     }
+    let mut section_outputs = Vec::new();
+    for section in ["summary", "metrics", "diagnostics", "benchmarks"] {
+        let sections = report::Sections {
+            summary: section == "summary",
+            metrics: section == "metrics",
+            diagnostics: section == "diagnostics",
+            benchmarks: section == "benchmarks",
+        };
+        for format in ["csv", "xlsx", "pdf"] {
+            section_outputs.push(report::generate(
+                &path,
+                &folder.join(format!("selected-{section}")),
+                report::Request {
+                    format: format.into(),
+                    from_ms: Some(now - 130000),
+                    to_ms: Some(finished),
+                    components: None,
+                    anonymized: Some(true),
+                    sections: Some(sections),
+                },
+            )?);
+        }
+    }
     Ok(
-        json!({"kind":"synthetic-integration-check","hardwareTest":false,"series":series.as_array().map_or(0,Vec::len),"maxPoints":series.as_array().unwrap().iter().map(|s|s["points"].as_array().map_or(0,Vec::len)).max(),"diagnostics":engine.current(true),"reports":outputs}),
+        json!({"kind":"synthetic-integration-check","hardwareTest":false,"series":series.as_array().map_or(0,Vec::len),"maxPoints":series.as_array().unwrap().iter().map(|s|s["points"].as_array().map_or(0,Vec::len)).max(),"diagnostics":engine.current(true),"reports":outputs,"sectionReports":section_outputs}),
     )
 }

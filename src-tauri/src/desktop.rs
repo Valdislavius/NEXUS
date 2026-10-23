@@ -242,9 +242,55 @@ mod native {
         label: String,
         value: Option<f64>,
         unit: String,
+        source: String,
         at: i64,
         ttl: i64,
-        history: Vec<f64>,
+        history: Vec<Option<f64>>,
+    }
+    impl Reading {
+        fn update(
+            label: &str,
+            metric: Option<&serde_json::Value>,
+            previous: Option<&Self>,
+            now: i64,
+        ) -> Self {
+            let unit = metric
+                .and_then(|m| m["unit"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let source = metric
+                .and_then(|m| m["source"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let at = metric
+                .and_then(|m| m["at"].as_str())
+                .and_then(parse_ms)
+                .unwrap_or(0);
+            let ttl = metric.and_then(|m| m["maxAgeMs"].as_i64()).unwrap_or(15000);
+            let value = metric
+                .and_then(|m| crate::metrics::reading(m, now, 15000))
+                .map(|(value, _)| value);
+            let previous = previous.filter(|p| p.source == source && p.unit == unit && p.at <= at);
+            let mut history = previous.map(|p| p.history.clone()).unwrap_or_default();
+            if previous.is_none_or(|p| p.at != at || p.value != value) {
+                if previous.is_some_and(|p| at.saturating_sub(p.at) > p.ttl) {
+                    history.push(None);
+                }
+                history.push(value);
+                if history.len() > 64 {
+                    history.drain(..history.len() - 64);
+                }
+            }
+            Self {
+                label: label.into(),
+                value,
+                unit,
+                source,
+                at,
+                ttl,
+                history,
+            }
+        }
     }
     struct ConfigRequest {
         overlay: Overlay,
@@ -388,30 +434,12 @@ mod native {
                 .and_then(|cs| cs.iter().find(|c| c["kind"] == kind))
                 .and_then(|c| c["metrics"].as_array())
                 .and_then(|ms| ms.iter().find(|m| m["id"] == id));
-            let value = metric.and_then(|m| m["value"].as_f64());
-            let at = metric
-                .and_then(|m| m["at"].as_str())
-                .and_then(parse_ms)
-                .unwrap_or(0);
-            let mut history = previous
-                .iter()
-                .find(|r| r.label == *key)
-                .map(|r| r.history.clone())
-                .unwrap_or_default();
-            if let Some(v) = value {
-                if history.len() >= 64 {
-                    history.remove(0);
-                }
-                history.push(v);
-            }
-            readings.push(Reading {
-                label: key.clone(),
-                value,
-                unit: metric.and_then(|m| m["unit"].as_str()).unwrap_or("").into(),
-                at,
-                ttl: metric.and_then(|m| m["maxAgeMs"].as_i64()).unwrap_or(15000),
-                history,
-            });
+            readings.push(Reading::update(
+                key,
+                metric,
+                previous.iter().find(|r| r.label == *key),
+                now_ms(),
+            ));
         }
         drop(readings);
         let _ = post(REDRAW);
@@ -600,7 +628,8 @@ mod native {
         for (i, r) in shared.readings.lock().unwrap().iter().enumerate() {
             let y = ((34. + i as f64 * if overlay.mode == "advanced" { 37. } else { 25. }) * scale)
                 as i32;
-            let value = if now_ms() - r.at <= r.ttl {
+            let age = now_ms().saturating_sub(r.at);
+            let value = if age >= 0 && r.ttl > 0 && age <= r.ttl {
                 r.value
                     .map(|v| format!("{v:.1} {}", r.unit))
                     .unwrap_or_else(|| "Недоступно".into())
@@ -617,20 +646,36 @@ mod native {
                 0x00eceae6,
             );
             if overlay.mode == "advanced" && r.history.len() > 1 {
-                let min = r.history.iter().copied().fold(f64::INFINITY, f64::min);
-                let max = r.history.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                let min = r
+                    .history
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .fold(f64::INFINITY, f64::min);
+                let max = r
+                    .history
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let pen = CreatePen(0, 1, 0x009bdd70);
                 let old_pen = SelectObject(dc, pen);
+                let mut connected = false;
                 for (j, value) in r.history.iter().enumerate() {
+                    let Some(value) = value else {
+                        connected = false;
+                        continue;
+                    };
                     let x =
                         ((300. + j as f64 * 130. / (r.history.len() - 1) as f64) * scale) as i32;
                     let yy = y
                         + (25. * scale - (value - min) / (max - min).max(1.) * 20. * scale) as i32;
-                    if j == 0 {
+                    if !connected {
                         MoveToEx(dc, x, yy, std::ptr::null_mut());
                     } else {
                         LineTo(dc, x, yy);
                     }
+                    connected = true;
                 }
                 SelectObject(dc, old_pen);
                 DeleteObject(pen);
@@ -639,6 +684,60 @@ mod native {
         SelectObject(dc, old);
         DeleteObject(font);
         EndPaint(hwnd, &paint);
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+        fn metric(at: i64, source: &str, unit: &str) -> serde_json::Value {
+            json!({"at":chrono::DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),"value":10.,"source":source,"unit":unit,"maxAgeMs":5000})
+        }
+        #[test]
+        fn overlay_deduplicates_cached_readings_and_breaks_missing_spans() {
+            let at = 1_800_000_000_000;
+            let m = metric(at, "A", "%");
+            let first = Reading::update("cpu.load", Some(&m), None, at);
+            let cached = Reading::update("cpu.load", Some(&m), Some(&first), at + 2000);
+            assert_eq!(cached.history, vec![Some(10.)]);
+            let mut missing = m.clone();
+            missing["status"] = json!("stale");
+            let gap = Reading::update("cpu.load", Some(&missing), Some(&cached), at + 3000);
+            assert!(gap.value.is_none());
+            assert_eq!(gap.history, vec![Some(10.), None]);
+            let restored = Reading::update(
+                "cpu.load",
+                Some(&metric(at + 10000, "A", "%")),
+                Some(&gap),
+                at + 10000,
+            );
+            assert_eq!(restored.history.last(), Some(&Some(10.)));
+            assert!(restored.history.contains(&None));
+            let future = Reading::update("cpu.load", Some(&m), None, at - 1);
+            assert!(future.value.is_none());
+        }
+        #[test]
+        fn overlay_never_mixes_sources_units_or_clock_epochs() {
+            let at = 1_800_000_000_000;
+            let first = Reading::update("cpu.load", Some(&metric(at, "A", "%")), None, at);
+            for m in [
+                metric(at + 1, "B", "%"),
+                metric(at + 1, "A", "W"),
+                metric(at - 1, "A", "%"),
+            ] {
+                let r = Reading::update("cpu.load", Some(&m), Some(&first), at + 1);
+                assert_eq!(r.history, vec![Some(10.)]);
+            }
+            let mut previous = first;
+            for n in 1..100 {
+                previous = Reading::update(
+                    "cpu.load",
+                    Some(&metric(at + n, "A", "%")),
+                    Some(&previous),
+                    at + n,
+                );
+            }
+            assert_eq!(previous.history.len(), 64);
+        }
     }
 }
 #[cfg(not(windows))]

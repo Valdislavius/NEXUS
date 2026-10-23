@@ -323,6 +323,11 @@ impl History {
     }
     pub fn record(&mut self, snapshot: &Value, retention_days: u32) -> Result<(), String> {
         let now = now_ms();
+        let observed = snapshot["at"]
+            .as_str()
+            .and_then(parse_ms)
+            .filter(|at| *at <= now)
+            .unwrap_or(now);
         if let Some(components) = snapshot["components"].as_array() {
             for component in components.iter().take(128) {
                 if let Some(metrics) = component["metrics"].as_array() {
@@ -330,16 +335,29 @@ impl History {
                         let Some(at) = metric["at"].as_str().and_then(parse_ms) else {
                             continue;
                         };
-                        if at > now + 60_000 || at < now - 86_400_000 {
+                        if at > now || at < now - 86_400_000 {
                             continue;
                         }
-                        let value = metric["value"].as_f64().filter(|v| v.is_finite());
+                        let ttl = if component["kind"] == "storage" {
+                            180_000
+                        } else {
+                            20_000
+                        };
+                        let value =
+                            crate::metrics::reading(metric, observed, ttl).map(|(value, _)| value);
                         if self.pending.len() >= 8192 {
                             self.pending.drain(..4096);
                             self.dropped_samples += 4096;
                         }
                         self.pending.push(Sample {
-                            at,
+                            // A missing reading marks the time the gap was
+                            // observed. It must not erase a valid older sample
+                            // carrying the same cached sensor timestamp.
+                            at: if value.is_some() {
+                                at
+                            } else {
+                                observed.max(at)
+                            },
                             component: component["id"].as_str().unwrap_or("").to_string(),
                             kind: component["kind"].as_str().unwrap_or("other").to_string(),
                             metric: metric["id"].as_str().unwrap_or("").to_string(),
@@ -349,10 +367,13 @@ impl History {
                             status: if value.is_some() {
                                 "available".into()
                             } else {
-                                metric["status"]
-                                    .as_str()
-                                    .unwrap_or("unavailable")
-                                    .to_string()
+                                match metric["status"].as_str() {
+                                    Some("stale") => "stale",
+                                    Some("unavailable") => "unavailable",
+                                    _ if metric["value"].is_number() => "stale",
+                                    _ => "unavailable",
+                                }
+                                .into()
                             },
                         });
                     }
@@ -573,6 +594,51 @@ mod tests {
             .unwrap();
         assert_eq!(v[0]["points"][0]["value"], Value::Null);
         assert_eq!(v[0]["points"][0]["count"], 0);
+    }
+    #[test]
+    fn unavailable_cached_reading_marks_a_gap_without_erasing_its_last_valid_sample() {
+        let mut h = memory();
+        let now = now_ms();
+        let at = now - 9000;
+        let stamp = |ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let metric = json!({"id":"load","at":stamp(at),"value":12.,"unit":"%","source":"test","maxAgeMs":5000});
+        h.record(&json!({"at":stamp(at),"components":[{"id":"cpu","kind":"cpu","metrics":[metric.clone()]}]}),7).unwrap();
+        let mut invalid = metric;
+        invalid["status"] = json!("unavailable");
+        h.record(
+            &json!({"at":stamp(now),"components":[{"id":"cpu","kind":"cpu","metrics":[invalid]}]}),
+            7,
+        )
+        .unwrap();
+        h.flush().unwrap();
+        let rows =
+            h.db.query("SELECT at_ms,value,status FROM samples ORDER BY at_ms", &[])
+                .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0], at);
+        assert_eq!(rows[0][1], 12.);
+        assert_eq!(rows[1][0], now);
+        assert_eq!(rows[1][1], Value::Null);
+        assert_eq!(rows[1][2], "unavailable");
+    }
+    #[test]
+    fn expired_nonnull_reading_is_not_stored_as_available() {
+        let mut h = memory();
+        let now = now_ms();
+        let stamp = |ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339()
+        };
+        h.record(&json!({"at":stamp(now),"components":[{"id":"cpu","kind":"cpu","metrics":[{"id":"load","at":stamp(now-9000),"value":99.,"unit":"%","source":"test","maxAgeMs":5000}]}]}),7).unwrap();
+        h.flush().unwrap();
+        let rows = h.db.query("SELECT value,status FROM samples", &[]).unwrap();
+        assert_eq!(rows[0][0], Value::Null);
+        assert_eq!(rows[0][1], "stale");
     }
     #[test]
     fn history_is_bounded_and_rollup_preserves_statistics() {
