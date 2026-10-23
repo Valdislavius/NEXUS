@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3000",
-    "build": "next build",
+    "build": "next build --webpack",
     "postbuild": "node scripts/normalize-static-export.mjs",
     "start": "node scripts/serve.mjs",
     "lint": "eslint .",

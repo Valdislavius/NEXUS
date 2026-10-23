@@ -12,6 +12,28 @@ pub struct Engine {
     previous: HashMap<String, (i64, f64)>,
     last: Value,
 }
+
+// Apply the same availability contract when raising, retaining and resolving a
+// finding. A slow SMART reading can remain fresh for longer than fast telemetry.
+fn available_reading(metric: &Value, kind: &str, now: i64) -> Option<(f64, i64)> {
+    if metric["status"]
+        .as_str()
+        .is_some_and(|status| status != "available")
+    {
+        return None;
+    }
+    let value = metric["value"].as_f64().filter(|v| v.is_finite())?;
+    let at = metric["at"].as_str().and_then(parse_ms)?;
+    let ttl =
+        metric["maxAgeMs"]
+            .as_i64()
+            .unwrap_or(if kind == "storage" { 180_000 } else { 20_000 });
+    if ttl < 0 || now.saturating_sub(at) > ttl || at > now.saturating_add(60_000) {
+        return None;
+    }
+    Some((value, at))
+}
+
 impl Engine {
     pub fn evaluate(&mut self, snapshot: &Value, thresholds: &Thresholds) -> Vec<Event> {
         let now = now_ms();
@@ -30,16 +52,7 @@ impl Engine {
                         total += 1;
                         let metric = m["id"].as_str().unwrap_or("");
                         let key = format!("{component}.{metric}");
-                        let at = m["at"].as_str().and_then(parse_ms).unwrap_or(0);
-                        let ttl = m["maxAgeMs"].as_i64().unwrap_or(if kind == "storage" {
-                            180_000
-                        } else {
-                            20_000
-                        });
-                        let Some(value) = m["value"]
-                            .as_f64()
-                            .filter(|v| v.is_finite() && now - at <= ttl && at <= now + 60000)
-                        else {
+                        let Some((value, at)) = available_reading(m, kind, now) else {
                             continue;
                         };
                         available += 1;
@@ -102,10 +115,12 @@ impl Engine {
                             && c["metrics"].as_array().is_some_and(|ms| {
                                 ms.iter().any(|m| {
                                     m["id"] == metric
-                                        && m["value"].as_f64().is_some()
-                                        && m["at"].as_str().and_then(parse_ms).is_some_and(|at| {
-                                            now - at <= m["maxAgeMs"].as_i64().unwrap_or(20_000)
-                                        })
+                                        && available_reading(
+                                            m,
+                                            c["kind"].as_str().unwrap_or("other"),
+                                            now,
+                                        )
+                                        .is_some()
                                 })
                             })
                     })
@@ -154,11 +169,12 @@ impl Engine {
                             && c["metrics"].as_array().is_some_and(|ms| {
                                 ms.iter().any(|m| {
                                     m["id"] == metric
-                                        && m["value"].as_f64().is_some()
-                                        && m["at"]
-                                            .as_str()
-                                            .and_then(parse_ms)
-                                            .is_some_and(|at| now - at <= 20_000)
+                                        && available_reading(
+                                            m,
+                                            c["kind"].as_str().unwrap_or("other"),
+                                            now,
+                                        )
+                                        .is_some()
                                 })
                             })
                     })
@@ -255,5 +271,71 @@ mod tests {
         let s = json!({"components":[{"id":"cpu","kind":"cpu","metrics":[{"id":"temperature","at":"2020-01-01T00:00:00Z","value":150,"unit":"°C"}]}]});
         assert!(e.evaluate(&s, &Thresholds::default()).is_empty());
         assert_eq!(e.current(true)["availableSensors"], 0);
+    }
+    #[test]
+    fn slow_sensor_recovery_uses_its_declared_freshness_budget() {
+        let mut engine = Engine::default();
+        let now = now_ms();
+        let stamp = |ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let mut snapshot = json!({"components":[{"id":"disk","kind":"storage","metrics":[{"id":"temperature","at":stamp(now),"value":80,"unit":"°C","status":"available","maxAgeMs":120000}]}]});
+        assert_eq!(engine.evaluate(&snapshot, &Thresholds::default()).len(), 1);
+        snapshot["components"][0]["metrics"][0]["at"] = json!(stamp(now - 60_000));
+        snapshot["components"][0]["metrics"][0]["value"] = json!(30);
+        let events = engine.evaluate(&snapshot, &Thresholds::default());
+        assert_eq!(engine.current(true)["state"], "normal");
+        assert_eq!(events.len(), 1);
+        assert!(events[0].id.starts_with("resolved:"));
+    }
+    #[test]
+    fn explicit_unavailable_status_neither_triggers_nor_resolves_findings() {
+        let at = chrono::DateTime::from_timestamp_millis(now_ms())
+            .unwrap()
+            .to_rfc3339();
+        for status in ["stale", "unavailable"] {
+            let mut engine = Engine::default();
+            let mut snapshot = json!({"components":[{"id":"cpu","kind":"cpu","metrics":[{"id":"temperature","at":at,"value":105,"unit":"°C","status":status}]}]});
+            assert!(engine
+                .evaluate(&snapshot, &Thresholds::default())
+                .is_empty());
+            assert_eq!(engine.current(true)["availableSensors"], 0);
+            snapshot["components"][0]["metrics"][0]["status"] = json!("available");
+            assert_eq!(engine.evaluate(&snapshot, &Thresholds::default()).len(), 1);
+            snapshot["components"][0]["metrics"][0]["status"] = json!(status);
+            snapshot["components"][0]["metrics"][0]["value"] = json!(40);
+            assert!(engine
+                .evaluate(&snapshot, &Thresholds::default())
+                .is_empty());
+            assert_eq!(engine.current(true)["state"], "insufficient_data");
+            assert_eq!(
+                engine.current(true)["findings"][0]["telemetryUnavailable"],
+                true
+            );
+        }
+    }
+    #[test]
+    fn future_dated_value_cannot_resolve_an_existing_warning() {
+        let now = now_ms();
+        let stamp = |ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339()
+        };
+        let mut engine = Engine::default();
+        let mut snapshot = json!({"components":[{"id":"cpu","kind":"cpu","metrics":[{"id":"temperature","at":stamp(now),"value":95,"unit":"°C"}]}]});
+        assert_eq!(engine.evaluate(&snapshot, &Thresholds::default()).len(), 1);
+        snapshot["components"][0]["metrics"][0]["at"] = json!(stamp(now + 120_000));
+        snapshot["components"][0]["metrics"][0]["value"] = json!(40);
+        assert!(engine
+            .evaluate(&snapshot, &Thresholds::default())
+            .is_empty());
+        assert_eq!(engine.current(true)["state"], "insufficient_data");
+        assert_eq!(
+            engine.current(true)["findings"][0]["telemetryUnavailable"],
+            true
+        );
     }
 }

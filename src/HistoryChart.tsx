@@ -47,7 +47,8 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
   const prefs = useMemo(() => loadPrefs(storageKey), [storageKey]);
   const metrics = component.metrics.filter(m => !m.id.startsWith('volume-total-'));
   const [ids, setIds] = useState<string[]>(prefs?.ids?.filter(id => metrics.some(m => m.id === id)).slice(0, 4) || []);
-  const chosen = ids.length ? ids : metrics.filter(m => m.primary).slice(0, 1).map(m => m.id).concat(metrics.length ? [metrics[0].id] : []).slice(0, 1);
+  const availableIds = ids.filter(id => metrics.some(m => m.id === id));
+  const chosen = availableIds.length ? availableIds : metrics.filter(m => m.primary).slice(0, 1).map(m => m.id).concat(metrics.length ? [metrics[0].id] : []).slice(0, 1);
   const [duration, setDuration] = useState(prefs?.duration && prefs.duration >= 60000 && prefs.duration <= 86400000 ? prefs.duration : 300000);
   const [live, setLive] = useState(true), [end, setEnd] = useState(Date.now()), [compare, setCompare] = useState(false);
   const [series, setSeries] = useState<HistorySeries[]>([]), [previous, setPrevious] = useState<HistorySeries[]>([]), [message, setMessage] = useState('');
@@ -55,6 +56,7 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
   const generation = useRef(0), canvas = useRef<SVGSVGElement>(null);
   const to = live ? Math.max(Date.parse(at) || Date.now(), Date.now()) : end;
   const from = to - duration, idKey = chosen.join('|');
+  const sourceKey = JSON.stringify(chosen.map(id => { const m = metrics.find(m => m.id === id)!; return [id, m.unit, m.source]; }));
   useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify({ duration, ids: chosen })); } catch { /* Storage may be unavailable in a restricted WebView. */ } }, [storageKey, duration, idKey]);
   useEffect(() => {
     const current = ++generation.current;
@@ -77,7 +79,7 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
         // Browser preview uses actual received samples only; no synthetic curve.
         setSeries(old => chosen.map(metricId => {
           const m = component.metrics.find(m => m.id === metricId)!;
-          const existing = old.find(s => s.metricId === metricId && s.componentId === component.id)?.points || [];
+          const existing = old.find(s => s.metricId === metricId && s.componentId === component.id && s.unit === m.unit && s.source === m.source)?.points || [];
           const pointAt = Date.parse(m.at || at);
           const points = existing.filter(p => p.atMs >= from && p.atMs <= to && p.atMs !== pointAt);
           if (live && Number.isFinite(pointAt) && pointAt >= from && pointAt <= to) points.push({ atMs: pointAt, value: m.value, min: m.value, max: m.value, count: m.value === null ? 0 : 1 });
@@ -87,8 +89,9 @@ export function HistoryChart({ component, at, events = [], enabled = false }: { 
       }
     }
     if (chosen.length) void update();
+    else { setSeries([]); setPrevious([]); setMessage(''); }
     return () => { gone = true; };
-  }, [component.id, at, idKey, duration, live, end, compare, enabled]);
+  }, [component.id, at, idKey, sourceKey, duration, live, end, compare, enabled]);
   const units = [...new Set(series.map(s => s.unit))];
   const exportCsv = () => {
     const lines = ['timestamp,component,metric,value,unit,source'];

@@ -71,7 +71,16 @@ export function App() {
   const monitor = useMonitor();
   const [settings, setSettings] = useState(defaultSettings), [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null), [events, setEvents] = useState<TimelineEvent[]>([]);
   useEffect(() => { let gone = false; void desktopCall<DesktopSettings>('desktop_settings').then(value => { if (!gone) setSettings(value); }).catch(() => {}); return () => { gone = true; }; }, []);
-  useEffect(() => { let gone = false; if (monitor.snapshot?.ready) void Promise.all([desktopCall<Diagnostics>('diagnostics_current'), desktopCall<TimelineEvent[]>('timeline_query', { query: { limit: 64 } })]).then(([result, timeline]) => { if (!gone) { setDiagnostics(result); setEvents(timeline); } }).catch(() => {}); return () => { gone = true; }; }, [monitor.snapshot?.at]);
+  useEffect(() => {
+    let gone = false;
+    if (monitor.snapshot?.ready) {
+      void desktopCall<Diagnostics>('diagnostics_current').then(result => { if (!gone) setDiagnostics(result); }).catch(() => {
+        if (!gone) setDiagnostics(previous => previous ? { ...previous, state: 'insufficient_data', fresh: false, availableSensors: 0 } : null);
+      });
+      void desktopCall<TimelineEvent[]>('timeline_query', { query: { limit: 64 } }).then(timeline => { if (!gone) setEvents(timeline); }).catch(() => {});
+    }
+    return () => { gone = true; };
+  }, [monitor.snapshot?.at]);
   return <AppView monitor={monitor} servicesEnabled desktopSettings={settings} diagnostics={diagnostics} events={events} onSettingsSave={setSettings} />;
 }
 

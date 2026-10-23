@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #[cfg(panic = "abort")]
-compile_error!("NEXUS requires panic=unwind so benchmark worker failures cannot abort the desktop process");
+compile_error!(
+    "NEXUS requires panic=unwind so benchmark worker failures cannot abort the desktop process"
+);
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -188,7 +190,7 @@ fn start(app: &tauri::AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 fn current_snapshot(state: State<Collector>) -> Value {
-    json!({"snapshot": *state.latest.lock().unwrap(), "error": *state.error.lock().unwrap()})
+    json!({"snapshot": *state.latest.lock().unwrap(), "error": *state.error.lock().unwrap(), "intervalMs":state.interval_ms.load(Ordering::Relaxed)})
 }
 fn snapshot_is_fresh(state: &Collector) -> bool {
     state.error.lock().unwrap().is_none()
@@ -354,6 +356,7 @@ fn send_profile(app: &tauri::AppHandle, settings: &settings::Settings) -> Result
     collector
         .interval_ms
         .store(settings.interval_ms(), Ordering::Relaxed);
+    let _ = app.emit("nexus:interval", settings.interval_ms());
     Ok(())
 }
 #[tauri::command]
@@ -380,7 +383,11 @@ fn export_diagnostics(state: State<Collector>) -> Value {
         .report(latest.as_ref(), running, fresh)
 }
 #[tauri::command]
-fn set_interval(milliseconds: u64, state: State<Collector>) -> Result<(), String> {
+fn set_interval(
+    app: tauri::AppHandle,
+    milliseconds: u64,
+    state: State<Collector>,
+) -> Result<(), String> {
     if ![2000, 5000, 10000].contains(&milliseconds) {
         return Err("Unsupported interval".into());
     }
@@ -393,6 +400,7 @@ fn set_interval(milliseconds: u64, state: State<Collector>) -> Result<(), String
     )
     .map_err(|e| e.to_string())?;
     state.interval_ms.store(milliseconds, Ordering::Relaxed);
+    let _ = app.emit("nexus:interval", milliseconds);
     Ok(())
 }
 #[tauri::command]
@@ -414,7 +422,7 @@ async fn restart_collector(app: tauri::AppHandle, milliseconds: u64) -> Result<(
             .unwrap()
             .clone();
         send_profile(&app, &settings)?;
-        set_interval(milliseconds, app.state::<Collector>())
+        set_interval(app.clone(), milliseconds, app.state::<Collector>())
     })
     .await
     .map_err(|e| e.to_string())?

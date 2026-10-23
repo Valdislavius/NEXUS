@@ -69,12 +69,14 @@ Remove-Item Env:E2E_BASE_URL
 | `npm run lint` | ESLint |
 | `npm run typecheck` | Строгая проверка TypeScript |
 | `npm run test` | Unit/component-тесты Vitest и Testing Library |
-| `npm run build` | Статический production export в out/; postbuild нормализует RSC-пути на Windows |
+| `npm run build` | Статический production export в out/ через Webpack; postbuild нормализует RSC-пути на Windows |
 | `npm run start` | Локальный просмотр готового out/ на localhost:3000 |
 | `npm run start -- --port 3001` | Просмотр production export параллельно с dev |
 | `npm run test:e2e` | Playwright + axe, production export на отдельном порту 3001 |
 
 Для чистой воспроизводимой установки в дальнейшем можно использовать `npm ci`. Браузерные тесты запускаются после `npm run build`. Сейчас они используют установленный Microsoft Edge (`channel: 'msedge'`); если его нет, установите браузер из официального источника или смените channel в playwright.config.ts и установите Chromium через Playwright. Тестовый сервер поднимается и останавливается автоматически. Порт 3001 должен быть свободен.
+
+Сборка явно использует поддерживаемый Next.js компилятор Webpack: в проверенной Windows-среде Turbopack завершал дочерний PostCSS-процесс до установки IPC-соединения. Формат статического сайта и команда запуска не меняются.
 
 ## Страницы
 

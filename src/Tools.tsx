@@ -26,13 +26,18 @@ export function DiagnosticSummary({ diagnostics }: { diagnostics: Diagnostics | 
   return <div className={`diagnostic-banner ${diagnostics?.state || 'insufficient_data'}`}><ShieldCheck size={26} /><div><h2>{diagnostics ? stateLabels[diagnostics.state] : 'Недостаточно данных'}</h2><p>{diagnostics ? `${diagnostics.availableSensors} из ${diagnostics.totalSensors} датчиков доступны · ${diagnostics.findings.length} активных предупреждений` : 'Для диагностики нужны свежие показания от настольного сборщика.'}</p></div><span className="tag">{diagnostics?.fresh ? 'СВЕЖИЕ ДАННЫЕ' : 'ОЖИДАНИЕ'}</span></div>;
 }
 export function Benchmarks({ componentKind, enabled = false }: { componentKind?: string; enabled?: boolean }) {
-  const [current, setCurrent] = useState<BenchmarkResult | null>(null), [history, setHistory] = useState<BenchmarkResult[]>([]), [confirm, setConfirm] = useState<BenchmarkKind | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [current, setCurrent] = useState<BenchmarkResult | null>(null), [history, setHistory] = useState<BenchmarkResult[]>([]), [confirm, setConfirm] = useState<BenchmarkKind | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(''), [historyError, setHistoryError] = useState('');
   const active = current?.status === 'running';
-  useEffect(() => { let gone = false; if (enabled) void Promise.all([desktopCall<BenchmarkResult | null>('benchmark_status'), desktopCall<BenchmarkResult[]>('benchmark_history')]).then(([result, rows]) => { if (!gone) { setCurrent(result); setHistory(rows); } }).catch(() => {}); return () => { gone = true; }; }, [enabled]);
+  useEffect(() => { let gone = false; if (enabled) void desktopCall<BenchmarkResult | null>('benchmark_status').then(result => { if (!gone) setCurrent(result); }).catch(() => { if (!gone) setError('Не удалось получить состояние теста.'); }); return () => { gone = true; }; }, [enabled]);
+  useEffect(() => {
+    let gone = false;
+    if (enabled) void desktopCall<BenchmarkResult[]>('benchmark_history').then(rows => { if (!gone) { setHistory(rows); setHistoryError(''); } }).catch(() => { if (!gone) setHistoryError('История проверок временно недоступна.'); });
+    return () => { gone = true; };
+  }, [enabled, current?.id, active]);
   useEffect(() => {
     if (!active || !enabled) return;
     let gone = false;
-    const timer = window.setInterval(() => { void desktopCall<BenchmarkResult | null>('benchmark_status').then(result => { if (gone) return; setCurrent(result); if (result && result.status !== 'running') void desktopCall<BenchmarkResult[]>('benchmark_history').then(rows => { if (!gone) setHistory(rows); }); }).catch(() => { if (!gone) setError('Не удалось получить состояние теста.'); }); }, 500);
+    const timer = window.setInterval(() => { void desktopCall<BenchmarkResult | null>('benchmark_status').then(result => { if (!gone) setCurrent(result); }).catch(() => { if (!gone) setError('Не удалось получить состояние теста.'); }); }, 500);
     return () => { gone = true; window.clearInterval(timer); };
   }, [active, enabled]);
   async function run(kind: BenchmarkKind) { setBusy(true); setError(''); setConfirm(null); try { setCurrent(await desktopCall<BenchmarkResult>('benchmark_start', { request: { kind, durationSeconds: 5 } })); } catch (e) { setError(String(e)); } finally { setBusy(false); } }
@@ -42,7 +47,7 @@ export function Benchmarks({ componentKind, enabled = false }: { componentKind?:
     {componentKind === 'gpu' && <div className="empty-inline">GPU benchmark и проверка VRAM пока недоступны. Драйверные показатели отображаются без внедрения в игры и вмешательства в античит.</div>}
     <div className="test-grid">{visibleTests.map(t => <article className="test-card" key={t.kind}><h3>{t.title}</h3><p>{t.detail}</p>{confirm === t.kind ? <div className="test-confirm"><p>{t.warning}</p><button className="primary-button" disabled={busy || active} onClick={() => void run(t.kind)}>{t.kind.startsWith('cpu_') ? 'Запустить на 5 секунд' : t.kind === 'network_ping' ? 'Отправить 4 запроса' : 'Запустить проверку'}</button><button className="text-button" onClick={() => setConfirm(null)}>Назад</button></div> : <button className="secondary-button" onClick={() => setConfirm(t.kind)} disabled={!enabled || !isTauri() || busy || active}><Play size={14} />Начать проверку</button>}</article>)}</div>
     {current && <div className="test-progress"><div><strong>{tests.find(t => t.kind === current.kind)?.title} · {resultLabels[current.status]}</strong><span>{Math.round(current.progress)}%</span></div><progress max="100" value={current.progress} />{active && <button className="secondary-button" disabled={busy} onClick={() => void cancel()}><Square size={13} />Остановить</button>}<p>{current.details}{current.error && ` · ${current.error}`}</p>{current.score != null && <p>Результат: {current.score.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} {current.unit}</p>}</div>}
-    {error && <p role="alert" className="setting-error">{error}</p>}{!enabled && <p className="small muted">Запуск проверок доступен в настольном приложении.</p>}
+    {(error || historyError) && <p role="alert" className="setting-error">{error || historyError}</p>}{!enabled && <p className="small muted">Запуск проверок доступен в настольном приложении.</p>}
     {history.length > 0 && <details className="test-history"><summary>История проверок · {history.length}</summary><div className="table-scroll"><table><thead><tr><th>Время</th><th>Проверка</th><th>Состояние</th><th>Результат</th></tr></thead><tbody>{history.map(r => <tr key={r.id}><td>{timeLabel(r.startedAtMs)}</td><td>{tests.find(t => t.kind === r.kind)?.title}</td><td>{resultLabels[r.status]}</td><td>{r.score != null ? `${r.score.toLocaleString('ru-RU')} ${r.unit || ''}` : r.error || '—'}</td></tr>)}</tbody></table></div></details>}
   </section>;
 }

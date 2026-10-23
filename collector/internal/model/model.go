@@ -93,7 +93,10 @@ func (m *Metric) Expire(now time.Time) {
 	m.Value = nil
 	m.Status = "stale"
 	m.Reason = "Данные устарели; ожидание нового измерения"
-	m.Diagnostic = &Diagnostic{Status: "stale", Code: "METRIC_EXPIRED"}
+	// Metric freshness and provider diagnostic categories are separate contracts.
+	// Keep the established diagnostic enum so one expired metric cannot cause a
+	// receiver to reject the whole snapshot as an unknown provider status.
+	m.Diagnostic = &Diagnostic{Status: "transient_error", Code: "METRIC_EXPIRED"}
 }
 func MissingDiagnostic(id, label, unit, source, reason, status, code string, primary bool) Metric {
 	m := Missing(id, label, unit, source, reason, primary)

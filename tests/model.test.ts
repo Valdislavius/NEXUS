@@ -1,6 +1,6 @@
 import {expect,test} from 'vitest';
 import {formatMetric,snapshotSchema,metricSchema,smartAttributeSchema,reconcileSnapshot} from '../src/model';
-const metric={id:'x',label:'x',value:null,unit:'%',source:'test',at:'',primary:true};
+const metric={id:'x',label:'x',value:null,unit:'%',source:'test',at:'2026-10-20T00:00:00Z',primary:true};
 test('missing sensors never become zero',()=>{expect(formatMetric(metric)).toBe('Нет данных');expect(formatMetric({...metric,value:0})).toBe('0 %');});
 test('unsupported protocol and malformed readings are rejected',()=>{expect(snapshotSchema.safeParse({version:2}).success).toBe(false);for(const value of [-1,NaN,Infinity,'12'])expect(metricSchema.safeParse({...metric,value}).success).toBe(false);});
 test('binary memory and decimal link units',()=>{expect(formatMetric({...metric,value:1073741824,unit:'bytes'})).toBe('1 ГиБ');expect(formatMetric({...metric,value:1000000000,unit:'bit/s'})).toBe('1 Гбит/с');expect(formatMetric({...metric,value:38.85,unit:'°C'})).toBe('39 °C');});
@@ -21,6 +21,13 @@ test('ATA raw values remain strings and invalid attribute bytes are rejected',()
 });
 
 test('an unavailable sensor with a diagnostic remains available for inspection',()=>{
- const input=snapshotSchema.parse({version:1,type:'snapshot',at:'',host:'',platform:'windows',ready:true,warnings:[],components:[{id:'gpu',kind:'gpu',name:'GPU',subtitle:'',specs:[],metrics:[{...metric,diagnostic:{status:'driver_no_data',code:'GPU_NO_READING'}}]}]});
+ const input=snapshotSchema.parse({version:1,type:'snapshot',at:metric.at,host:'',platform:'windows',ready:true,warnings:[],components:[{id:'gpu',kind:'gpu',name:'GPU',subtitle:'',specs:[],metrics:[{...metric,diagnostic:{status:'driver_no_data',code:'GPU_NO_READING'}}]}]});
  expect(reconcileSnapshot(null,input).components[0].metrics[0].value).toBeNull();
+});
+
+test('wire timestamps require a complete ISO date and retain Go nanosecond precision',()=>{
+ for(const at of ['', 'not-a-date', '2026-10-20']) expect(metricSchema.safeParse({...metric,at}).success).toBe(false);
+ expect(metricSchema.safeParse({...metric,at:'2026-10-20T12:34:56.123456789Z'}).success).toBe(true);
+ const frame={version:1,type:'snapshot',at:metric.at,host:'',platform:'windows',ready:true,warnings:[],components:[]};
+ expect(snapshotSchema.safeParse({...frame,at:'invalid'}).success).toBe(false);
 });

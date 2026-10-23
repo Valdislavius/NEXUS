@@ -40,7 +40,7 @@ func TestAvailabilityAndExpiration(t *testing.T) {
 	}
 	originalAt := m.At
 	m.Expire(now.Add(2 * time.Second))
-	if m.Status != "stale" || m.Value != nil || m.At != originalAt || m.Diagnostic.Code != "METRIC_EXPIRED" {
+	if m.Status != "stale" || m.Value != nil || m.At != originalAt || m.Diagnostic == nil || m.Diagnostic.Code != "METRIC_EXPIRED" || m.Diagnostic.Status != "transient_error" {
 		t.Fatalf("invalid stale sample: %+v", m)
 	}
 	if m := Missing("x", "X", "%", "test", "not supported", true); m.Status != "unavailable" || m.Value != nil {

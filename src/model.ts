@@ -4,9 +4,10 @@ export const diagnosticStatusSchema = z.enum([
   'driver_no_data', 'invalid_response', 'transient_error',
 ]);
 export const diagnosticSchema = z.object({ status: diagnosticStatusSchema, code: z.string() });
+const timestampSchema = z.iso.datetime({ offset: true });
 export const metricSchema = z.object({
   id: z.string(), label: z.string(), value: z.number().finite().nonnegative().nullable(),
-  unit: z.string(), source: z.string(), reason: z.string().optional(), at: z.string(), primary: z.boolean(),
+  unit: z.string(), source: z.string(), reason: z.string().optional(), at: timestampSchema, primary: z.boolean(),
   description: z.string().optional(), diagnostic: diagnosticSchema.optional(),
   status: z.enum(['available', 'unavailable', 'stale']).optional(), maxAgeMs: z.number().int().positive().optional(),
 });
@@ -23,7 +24,7 @@ export const componentSchema = z.object({
   smart: z.array(smartAttributeSchema).optional(),
 });
 export const snapshotSchema = z.object({
-  version: z.literal(1), type: z.literal('snapshot'), at: z.string(), host: z.string(), platform: z.string(),
+  version: z.literal(1), type: z.literal('snapshot'), at: timestampSchema, host: z.string(), platform: z.string(),
   ready: z.boolean(), components: z.array(componentSchema), warnings: z.array(z.string()),
 });
 export type Component = z.infer<typeof componentSchema>;
@@ -72,10 +73,12 @@ export function invalidateExpiredMetrics(snapshot: Snapshot, now = Date.now()): 
   const components = snapshot.components.map(c => {
     let componentChanged = false;
     const metrics = c.metrics.map(m => {
-      const expired = m.status === 'stale' || m.status === 'unavailable' || (m.maxAgeMs != null && Number.isFinite(Date.parse(m.at)) && now - Date.parse(m.at) > m.maxAgeMs);
+      const age = now - Date.parse(m.at);
+      const invalidTime = !Number.isFinite(age) || age < 0;
+      const expired = invalidTime || m.status === 'stale' || m.status === 'unavailable' || (m.maxAgeMs != null && age > m.maxAgeMs);
       if (!expired || m.value === null) return m;
       changed = componentChanged = true;
-      return { ...m, value: null, status: 'stale' as const, reason: 'Срок актуальности показания истёк', diagnostic: { status: 'transient_error' as const, code: 'SENSOR_READING_EXPIRED' } };
+      return { ...m, value: null, status: 'stale' as const, reason: invalidTime ? 'Время показания недостоверно' : 'Срок актуальности показания истёк', diagnostic: { status: invalidTime ? 'invalid_response' as const : 'transient_error' as const, code: invalidTime ? 'SENSOR_TIMESTAMP_INVALID' : 'SENSOR_READING_EXPIRED' } };
     });
     return componentChanged ? { ...c, metrics } : c;
   });
