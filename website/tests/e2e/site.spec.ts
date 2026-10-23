@@ -2,7 +2,9 @@ import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { pagePaths } from '../../src/config/site';
 import { release } from '../../src/config/release';
+import { screenshots } from '../../src/config/screenshots';
 import { mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 const widths = [360, 390, 768, 1024, 1440, 1920];
 const screenshotDirectory = process.env.E2E_BASE_URL ? 'qa/docker-screenshots' : 'qa/screenshots';
 for (const width of widths) {
@@ -68,12 +70,24 @@ test('Мобильное меню: открытие, Escape, переход, а�
   await page.getByRole('button', { name: 'Закрыть меню' }).click();
   await expect(open).toHaveAttribute('aria-expanded', 'false');
 });
-test('Интерфейс: честный статус подготовки без личных снимков', async ({ page, request }) => {
+test('Интерфейс: реальный снимок настроек beta с точной подписью и без старых личных снимков', async ({ page, request }) => {
   await page.goto('/');
-  const placeholder = page.getByTestId('interface-preview');
-  await expect(placeholder.getByRole('heading')).toHaveText('Снимки Desktop 1.0 будут добавлены после проверки интерфейса');
-  await expect(placeholder.getByRole('link')).toHaveAttribute('href', /^\/roadmap\/?#desktop-progress$/);
-  expect(await page.locator('img[src*="/images/"]').count()).toBe(0);
+  const preview = page.getByTestId('interface-preview');
+  const screenshot = screenshots[0];
+  await expect(preview.getByRole('heading')).toHaveText(screenshot.title);
+  await expect(preview.locator('figcaption')).toContainText('23 октября 2026');
+  await expect(preview.getByRole('link', { name: 'Этапы проверки и ограничения' })).toHaveAttribute('href', /^\/roadmap\/?#desktop-progress$/);
+  const image = preview.getByRole('img', { name: screenshot.alt });
+  await image.scrollIntoViewIfNeeded();
+  await expect(image).toBeVisible();
+  await expect(image).toHaveAttribute('src', screenshot.src);
+  await expect.poll(() => image.evaluate(node => [(node as HTMLImageElement).naturalWidth, (node as HTMLImageElement).naturalHeight])).toEqual([screenshot.width, screenshot.height]);
+  await expect(preview.getByRole('link', { name: 'Открыть снимок настроек в полном размере' })).toHaveAttribute('href', screenshot.src);
+  const original = await request.get(screenshot.src);
+  expect(original.status()).toBe(200);
+  expect(original.headers()['content-type']).toBe('image/jpeg');
+  expect(createHash('sha256').update(await original.body()).digest('hex')).toBe(screenshot.sha256);
+  expect(await page.locator('img[src*="/images/"]').count()).toBe(1);
   expect(await page.getByRole('dialog').count()).toBe(0);
   for (const name of ['overview', 'cpu', 'storage']) expect((await request.get('/images/' + name + '.webp')).status()).toBe(404);
 });

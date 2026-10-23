@@ -6,7 +6,8 @@ import { formatDate, formatBytes } from '@/lib/format';
 import { docs } from '@/content/docs';
 import { desktopDevelopment } from '@/config/desktop';
 import { screenshots } from '@/config/screenshots';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 describe('Проверенные материалы релиза', () => {
   it('разработка Desktop 1.0 не подменяет опубликованные загрузки Alpha', () => {
     expect(desktopDevelopment.version).toBe('1.0.0-beta.1');
@@ -14,7 +15,9 @@ describe('Проверенные материалы релиза', () => {
     expect(release.version).toBe('0.3.1');
     expect(release.assets.installer.url).toContain('/v0.3.1/');
     expect(Object.keys(desktopDevelopment)).not.toContain('assets');
-    expect(screenshots).toEqual([]);
+    expect(screenshots).toHaveLength(1);
+    expect(screenshots[0]).toMatchObject({ src: '/images/desktop-settings-beta1.jpg', version: '1.0.0-beta.1', capturedOn: '2026-10-23', width: 1282, height: 932 });
+    expect(createHash('sha256').update(readFileSync(`public${screenshots[0].src}`)).digest('hex')).toBe(screenshots[0].sha256);
     for (const name of ['overview', 'cpu', 'storage']) expect(existsSync(`public/images/${name}.webp`)).toBe(false);
   });
   it('манифест совпадает с независимым снимком официального GitHub API', () => {
